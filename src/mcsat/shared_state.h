@@ -30,6 +30,7 @@ typedef struct mcsat_shared_state_s mcsat_shared_state_t;
 mcsat_shared_state_t* mcsat_shared_state_acquire(term_table_t* terms, type_table_t* types);
 void mcsat_shared_state_release(mcsat_shared_state_t* state);
 bool mcsat_shared_state_is_enabled(const mcsat_shared_state_t* state);
+void mcsat_shared_state_unregister_thread(void);
 
 void mcsat_shared_state_term_lock(mcsat_shared_state_t* state);
 void mcsat_shared_state_term_unlock(mcsat_shared_state_t* state);

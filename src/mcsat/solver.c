@@ -113,6 +113,7 @@ typedef enum {
 } lemma_weight_type_t;
 
 #define MCSAT_MAX_PLUGINS 10
+#define MCSAT_PARALLEL_WORKER_STACK_SIZE (16u * 1024u * 1024u)
 
 typedef struct {
   /** Main evaluation method */
@@ -128,6 +129,8 @@ typedef struct {
   bool result_ready;
   smt_status_t result_status;
   mcsat_solver_t* winner;
+  mcsat_solver_t** workers;
+  uint32_t worker_count;
 } mcsat_parallel_state_t;
 
 typedef struct {
@@ -481,6 +484,32 @@ void mcsat_parallel_destroy_winner(mcsat_solver_t* mcsat) {
 }
 
 static
+void mcsat_parallel_request_stop_locked(mcsat_parallel_state_t* parallel) {
+  uint32_t i;
+
+  parallel->stop_requested = true;
+  if (parallel->workers != NULL) {
+    for (i = 0; i < parallel->worker_count; ++i) {
+      if (parallel->workers[i] != NULL) {
+        parallel->workers[i]->stop_search = true;
+      }
+    }
+  }
+  __sync_synchronize();
+}
+
+static
+void mcsat_parallel_request_stop(mcsat_parallel_state_t* parallel) {
+  if (parallel == NULL) {
+    return;
+  }
+
+  pthread_mutex_lock(&parallel->result_lock);
+  mcsat_parallel_request_stop_locked(parallel);
+  pthread_mutex_unlock(&parallel->result_lock);
+}
+
+static
 void mcsat_parallel_invalidate(mcsat_solver_t* mcsat) {
   mcsat_solver_t* root = mcsat_parallel_root(mcsat);
 
@@ -800,7 +829,6 @@ void trail_token_lemma(trail_token_t* token, term_t lemma) {
 
   // Remember the lemma
   ivector_push(&tk->ctx->mcsat->plugin_lemmas, lemma);
-  mcsat_publish_shared_lemma(tk->ctx->mcsat, lemma);
 }
 
 static
@@ -817,7 +845,6 @@ void trail_token_definition_lemma(trail_token_t* token, term_t lemma, term_t t) 
   // Remember the definition
   ivector_push(&tk->ctx->mcsat->plugin_definition_lemmas, lemma);
   ivector_push(&tk->ctx->mcsat->plugin_definition_vars, t);
-  mcsat_publish_shared_lemma(tk->ctx->mcsat, lemma);
 }
 
 /** Construct the trail token */
@@ -1091,6 +1118,8 @@ void mcsat_parallel_state_construct(mcsat_parallel_state_t* parallel) {
   parallel->result_ready = false;
   parallel->result_status = YICES_STATUS_IDLE;
   parallel->winner = NULL;
+  parallel->workers = NULL;
+  parallel->worker_count = 0;
 }
 
 static
@@ -1117,9 +1146,9 @@ void mcsat_construct(mcsat_solver_t* mcsat, const context_t* ctx, mcsat_solver_t
   mcsat->types = ctx->types;
   mcsat->terms = ctx->terms;
   /*
-   * Keep the root solver on the original local data structures. Shared
-   * registries are reserved for replayed parallel workers so sequential MCSAT
-   * behavior stays unchanged.
+   * Keep the root solver on the original local data structures. Parallel
+   * workers still share the term lock substrate, but variable ownership stays
+   * local until the cross-worker registry design is proven correct.
    */
   mcsat->shared_state = owner == NULL ? NULL : mcsat_shared_state_acquire(mcsat->terms, mcsat->types);
   mcsat->terms_size_on_solver_entry = 0;
@@ -1137,7 +1166,7 @@ void mcsat_construct(mcsat_solver_t* mcsat, const context_t* ctx, mcsat_solver_t
 
   // The variable database
   mcsat->var_db = safe_malloc(sizeof(variable_db_t));
-  variable_db_construct(mcsat->var_db, mcsat->terms, mcsat->types, mcsat->ctx->trace, mcsat->shared_state);
+  variable_db_construct(mcsat->var_db, mcsat->terms, mcsat->types, mcsat->ctx->trace, NULL);
   variable_db_add_new_variable_listener(mcsat->var_db, (variable_db_new_variable_notify_t*)&mcsat->var_db_notify);
 
   // List of assertions
@@ -1963,7 +1992,6 @@ void mcsat_assert_formula(mcsat_solver_t* mcsat, term_t f) {
 
   // Add the terms
   f_pos = unsigned_term(f);
-  mcsat_shared_state_publish_term(mcsat->shared_state, f_pos);
   f_pos_var = variable_db_get_variable(mcsat->var_db, f_pos);
   mcsat_process_registration_queue(mcsat);
 
@@ -3220,8 +3248,6 @@ void mcsat_solve_local(mcsat_solver_t* mcsat, const param_t *params, model_t* md
         if (!mcsat_is_consistent(mcsat)) {
           goto conflict;
         }
-      } else {
-        mcsat_request_restart(mcsat);
       }
     }
 
@@ -3421,8 +3447,7 @@ void mcsat_parallel_report_result(mcsat_solver_t* worker) {
     parallel->result_ready = true;
     parallel->result_status = worker->status;
     parallel->winner = worker;
-    parallel->stop_requested = true;
-    __sync_synchronize();
+    mcsat_parallel_request_stop_locked(parallel);
   }
   pthread_mutex_unlock(&parallel->result_lock);
 }
@@ -3437,13 +3462,21 @@ void* mcsat_parallel_worker_main(void* data) {
   worker = task->worker;
   code = setjmp(worker->worker_env);
   if (code == 0) {
+    /*
+     * Workers still share the global term table. Until the term store is made
+     * immutable or truly reader/writer-safe, serialize solve-time access to it
+     * so concurrent term construction cannot race with lock-free readers.
+     */
+    mcsat_term_lock(worker);
     mcsat_solve_local(worker, task->params, task->mdl, task->n_assumptions, task->assumptions);
+    mcsat_term_unlock_all(worker);
   } else {
     mcsat_term_unlock_all(worker);
     worker->status = YICES_STATUS_ERROR;
   }
 
   mcsat_parallel_report_result(worker);
+  mcsat_shared_state_unregister_thread();
   return NULL;
 }
 
@@ -3465,8 +3498,11 @@ void mcsat_solve_parallel(mcsat_solver_t* mcsat, const param_t *params, model_t*
   uint32_t worker_count;
   uint32_t i;
   uint64_t session;
+  int32_t code;
+  size_t stack_size;
   mcsat_solver_t** workers;
   pthread_t* threads;
+  pthread_attr_t thread_attr;
   mcsat_parallel_worker_task_t* tasks;
   mcsat_parallel_worker_task_t current_task;
   mcsat_solver_t* winner;
@@ -3477,7 +3513,11 @@ void mcsat_solve_parallel(mcsat_solver_t* mcsat, const param_t *params, model_t*
 
   worker_count = (uint32_t) mcsat->ctx->mcsat_options.parallel_workers;
   if (worker_count <= 1) {
-    session = mcsat_shared_state_new_lemma_session(mcsat->shared_state);
+    /*
+     * Keep sequential semantics identical to the local solver. Shared lemma
+     * exchange is disabled until the imported-lemma path is validated.
+     */
+    session = 0;
     mcsat_reset_shared_lemma_session(mcsat, session);
     mcsat_solve_local(mcsat, params, mdl, n_assumptions, assumptions);
     mcsat_clear_pending_model_hint(mcsat);
@@ -3496,11 +3536,36 @@ void mcsat_solve_parallel(mcsat_solver_t* mcsat, const param_t *params, model_t*
   threads = (pthread_t*) safe_malloc((worker_count - 1) * sizeof(pthread_t));
   tasks = (mcsat_parallel_worker_task_t*) safe_malloc((worker_count - 1) * sizeof(mcsat_parallel_worker_task_t));
 
+  code = pthread_attr_init(&thread_attr);
+  if (code != 0) {
+    perror_fatal("pthread_attr_init");
+  }
+  code = pthread_attr_getstacksize(&thread_attr, &stack_size);
+  if (code != 0) {
+    perror_fatal("pthread_attr_getstacksize");
+  }
+  if (stack_size < MCSAT_PARALLEL_WORKER_STACK_SIZE) {
+    code = pthread_attr_setstacksize(&thread_attr, MCSAT_PARALLEL_WORKER_STACK_SIZE);
+    if (code != 0) {
+      perror_fatal("pthread_attr_setstacksize");
+    }
+  }
+
   for (i = 0; i < worker_count; ++i) {
     workers[i] = mcsat_new_worker_replica(mcsat, i);
   }
 
-  session = mcsat_shared_state_new_lemma_session(workers[0]->shared_state);
+  pthread_mutex_lock(&parallel->result_lock);
+  parallel->workers = workers;
+  parallel->worker_count = worker_count;
+  pthread_mutex_unlock(&parallel->result_lock);
+
+  /*
+   * Correctness first: workers solve against private local state and only
+   * share the global term lock. Learned lemma exchange can be re-enabled once
+   * the import path has a clean parallel regression pass.
+   */
+  session = 0;
   for (i = 0; i < worker_count; ++i) {
     mcsat_reset_shared_lemma_session(workers[i], session);
     if (mcsat->pending_model_hint_model != NULL && mcsat->pending_model_hint_filter.size > 0) {
@@ -3517,10 +3582,11 @@ void mcsat_solve_parallel(mcsat_solver_t* mcsat, const param_t *params, model_t*
     tasks[i - 1].mdl = mdl;
     tasks[i - 1].n_assumptions = n_assumptions;
     tasks[i - 1].assumptions = assumptions;
-    if (pthread_create(&threads[i - 1], NULL, mcsat_parallel_worker_main, &tasks[i - 1]) != 0) {
+    if (pthread_create(&threads[i - 1], &thread_attr, mcsat_parallel_worker_main, &tasks[i - 1]) != 0) {
       perror_fatal("pthread_create");
     }
   }
+  pthread_attr_destroy(&thread_attr);
 
   current_task.worker = workers[0];
   current_task.params = params;
@@ -3529,7 +3595,13 @@ void mcsat_solve_parallel(mcsat_solver_t* mcsat, const param_t *params, model_t*
   current_task.assumptions = assumptions;
   current_code = setjmp(workers[0]->worker_env);
   if (current_code == 0) {
+    /*
+     * See mcsat_parallel_worker_main(): correctness first while the shared
+     * term table remains mutable.
+     */
+    mcsat_term_lock(workers[0]);
     mcsat_solve_local(workers[0], params, mdl, n_assumptions, assumptions);
+    mcsat_term_unlock_all(workers[0]);
   } else {
     mcsat_term_unlock_all(workers[0]);
     workers[0]->status = YICES_STATUS_ERROR;
@@ -3539,6 +3611,11 @@ void mcsat_solve_parallel(mcsat_solver_t* mcsat, const param_t *params, model_t*
   for (i = 1; i < worker_count; ++i) {
     pthread_join(threads[i - 1], NULL);
   }
+
+  pthread_mutex_lock(&parallel->result_lock);
+  parallel->workers = NULL;
+  parallel->worker_count = 0;
+  pthread_mutex_unlock(&parallel->result_lock);
 
   parallel->running = false;
   parallel->stop_requested = false;
@@ -3561,6 +3638,7 @@ void mcsat_solve_parallel(mcsat_solver_t* mcsat, const param_t *params, model_t*
   safe_free(threads);
   safe_free(workers);
   mcsat_clear_pending_model_hint(mcsat);
+  mcsat_shared_state_unregister_thread();
 }
 
 void mcsat_set_model_hint(mcsat_solver_t* mcsat, model_t* mdl, uint32_t n_mdl_filter,
@@ -3829,7 +3907,7 @@ void mcsat_gc_mark(mcsat_solver_t* mcsat) {
 void mcsat_stop_search(mcsat_solver_t* mcsat) {
   mcsat->stop_search = true;
   if (mcsat_is_parallel_owner(mcsat) && mcsat->parallel_state != NULL) {
-    mcsat->parallel_state->stop_requested = true;
+    mcsat_parallel_request_stop(mcsat->parallel_state);
   }
 }
 

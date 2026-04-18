@@ -184,17 +184,10 @@ static pthread_once_t shared_state_key_once = PTHREAD_ONCE_INIT;
 static pthread_key_t shared_state_thread_key;
 
 static
-void shared_state_thread_destructor(void* value) {
-  if (value != NULL) {
-    urcu_memb_unregister_thread();
-  }
-}
-
-static
 void shared_state_make_key(void) {
   int32_t code;
 
-  code = pthread_key_create(&shared_state_thread_key, shared_state_thread_destructor);
+  code = pthread_key_create(&shared_state_thread_key, NULL);
   if (code != 0) {
     perror_fatal("pthread_key_create");
   }
@@ -212,6 +205,23 @@ void shared_state_register_thread(void) {
   if (pthread_getspecific(shared_state_thread_key) == NULL) {
     urcu_memb_register_thread();
     code = pthread_setspecific(shared_state_thread_key, (void*) 1);
+    if (code != 0) {
+      perror_fatal("pthread_setspecific");
+    }
+  }
+}
+
+void mcsat_shared_state_unregister_thread(void) {
+  int32_t code;
+
+  code = pthread_once(&shared_state_key_once, shared_state_make_key);
+  if (code != 0) {
+    perror_fatal("pthread_once");
+  }
+
+  if (pthread_getspecific(shared_state_thread_key) != NULL) {
+    urcu_memb_unregister_thread();
+    code = pthread_setspecific(shared_state_thread_key, NULL);
     if (code != 0) {
       perror_fatal("pthread_setspecific");
     }
