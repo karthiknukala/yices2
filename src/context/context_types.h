@@ -173,12 +173,12 @@ typedef enum {
  * - the special "auto" codes can be used if mode is CTX_MODE_ONECHECK
  */
 typedef enum {
-  CTX_ARCH_NOSOLVERS,    // core only
-  CTX_ARCH_EG,           // egraph
-  CTX_ARCH_SPLX,         // simplex
-  CTX_ARCH_IFW,          // integer floyd-warshall
-  CTX_ARCH_RFW,          // real floyd-warshall
-  CTX_ARCH_BV,           // bitvector solver
+  CTX_ARCH_NOSOLVERS,    // egraph kernel + SAT backend
+  CTX_ARCH_EG,           // egraph kernel
+  CTX_ARCH_SPLX,         // egraph kernel + simplex satellite
+  CTX_ARCH_IFW,          // alias onto the egraph kernel + arithmetic satellite
+  CTX_ARCH_RFW,          // alias onto the egraph kernel + arithmetic satellite
+  CTX_ARCH_BV,           // egraph kernel + bitvector satellite
   CTX_ARCH_EGFUN,        // egraph+array/function theory
   CTX_ARCH_EGSPLX,       // egraph+simplex
   CTX_ARCH_EGBV,         // egraph+bitvector solver
@@ -187,8 +187,8 @@ typedef enum {
   CTX_ARCH_EGSPLXBV,     // egraph+simplex+bitvector
   CTX_ARCH_EGFUNSPLXBV,  // all solvers (should be the default)
 
-  CTX_ARCH_AUTO_IDL,     // either simplex or integer floyd-warshall
-  CTX_ARCH_AUTO_RDL,     // either simplex or real floyd-warshall
+  CTX_ARCH_AUTO_IDL,     // auto arithmetic selection on the egraph kernel
+  CTX_ARCH_AUTO_RDL,     // auto arithmetic selection on the egraph kernel
 
   CTX_ARCH_MCSAT         // mcsat solver
 } context_arch_t;
@@ -646,7 +646,7 @@ struct context_s {
   // base_level == number of calls to push
   uint32_t base_level;
 
-  // core and theory solvers
+  // CDCL(T) kernel + embedded SAT backend + satellites
   smt_core_t *core;
   egraph_t *egraph;
   mcsat_solver_t *mcsat;

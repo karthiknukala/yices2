@@ -36,6 +36,7 @@
 #include "solvers/bv/dimacs_printer.h"
 #include "solvers/cdcl/delegate.h"
 #include "solvers/funs/fun_solver.h"
+#include "solvers/egraph/egraph.h"
 #include "solvers/simplex/simplex.h"
 #include "terms/term_explorer.h"
 #include "terms/term_manager.h"
@@ -585,8 +586,12 @@ smt_status_t check_context(context_t *ctx, const param_t *params) {
   if (stat == YICES_STATUS_IDLE) {
     // clean state: the search can proceed
     context_set_search_parameters(ctx, params);
-    solve(core, params, 0, NULL);
-    stat = smt_status(core);
+    if (ctx->egraph != NULL) {
+      stat = egraph_search(ctx->egraph, params, 0, NULL);
+    } else {
+      solve(core, params, 0, NULL);
+      stat = smt_status(core);
+    }
   }
 
   return stat;
@@ -611,8 +616,12 @@ smt_status_t check_context_with_assumptions(context_t *ctx, const param_t *param
       params = get_default_params();
     }
     context_set_search_parameters(ctx, params);
-    solve(core, params, n, a);
-    stat = smt_status(core);
+    if (ctx->egraph != NULL) {
+      stat = egraph_search(ctx->egraph, params, n, a);
+    } else {
+      solve(core, params, n, a);
+      stat = smt_status(core);
+    }
   }
 
   return stat;
@@ -1463,7 +1472,11 @@ void context_build_unsat_core(context_t *ctx, ivector_t *v) {
 
   core = ctx->core;
   assert(core != NULL && core->status == YICES_STATUS_UNSAT);
-  build_unsat_core(core, v);
+  if (ctx->egraph != NULL) {
+    egraph_build_unsat_core(ctx->egraph, v);
+  } else {
+    build_unsat_core(core, v);
+  }
 
   // convert from literals to terms
   n = v->size;

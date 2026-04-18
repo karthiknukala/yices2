@@ -37,6 +37,7 @@
 #include "utils/memalloc.h"
 #include "utils/ptr_partitions.h"
 
+#include "api/search_parameters.h"
 #include "api/yices_globals.h"
 #include "mt/thread_macros.h"
 
@@ -6923,12 +6924,16 @@ void init_egraph(egraph_t *egraph, type_table_t *ttbl) {
  * Attach an arithmetic solver: it's used for both INT and REAL
  * - the control interface is attached only to type REAL
  *   so that push/pop/reset/start_search are not called twice
+ * - this can be done either before the SAT backend is attached or later,
+ *   provided the kernel has not started searching yet
  */
 void egraph_attach_arithsolver(egraph_t *egraph, void *solver, th_ctrl_interface_t *ctrl,
                                th_smt_interface_t *smt, th_egraph_interface_t *eg,
                                arith_egraph_interface_t *arith_eg) {
 
-  assert(egraph->core == NULL && egraph->arith_smt == NULL);
+  assert(egraph->arith_smt == NULL);
+  assert(egraph->decision_level == egraph->base_level);
+  assert(!egraph->presearch);
 
   egraph->th[ETYPE_INT] = solver;
   egraph->th[ETYPE_REAL] = solver;
@@ -6948,7 +6953,9 @@ void egraph_attach_bvsolver(egraph_t *egraph, void *solver, th_ctrl_interface_t 
                             th_smt_interface_t *smt, th_egraph_interface_t *eg,
                             bv_egraph_interface_t *bv_eg) {
 
-  assert(egraph->core == NULL && egraph->bv_smt == NULL);
+  assert(egraph->bv_smt == NULL);
+  assert(egraph->decision_level == egraph->base_level);
+  assert(!egraph->presearch);
 
   egraph->th[ETYPE_BV] = solver;
   egraph->ctrl[ETYPE_BV] = ctrl;
@@ -6967,7 +6974,9 @@ void egraph_attach_funsolver(egraph_t *egraph, void *solver, th_ctrl_interface_t
                              th_egraph_interface_t *eg, fun_egraph_interface_t *fun_eg) {
   etype_t id;
 
-  assert(egraph->core == NULL && egraph->ctrl[ETYPE_FUNCTION] == NULL);
+  assert(egraph->ctrl[ETYPE_FUNCTION] == NULL);
+  assert(egraph->decision_level == egraph->base_level);
+  assert(!egraph->presearch);
 
   id = ETYPE_FUNCTION;
   egraph->th[id] = solver;
@@ -6986,8 +6995,9 @@ void egraph_attach_quantsolver(egraph_t *egraph, void *solver, th_ctrl_interface
                              th_egraph_interface_t *eg, quant_egraph_interface_t *quant_eg) {
   etype_t id;
 
-//  assert(egraph->core == NULL && egraph->ctrl[ETYPE_QUANT] == NULL);
   assert(egraph->ctrl[ETYPE_QUANT] == NULL);
+  assert(egraph->decision_level == egraph->base_level);
+  assert(!egraph->presearch);
 
   id = ETYPE_QUANT;
   egraph->th[id] = solver;
@@ -7056,6 +7066,379 @@ void delete_egraph(egraph_t *egraph) {
   delete_egraph_stack(&egraph->stack);
   delete_eterm_table(&egraph->terms);
   delete_class_table(&egraph->classes);
+}
+
+
+
+/*****************************
+ *  ORCHESTRATOR SERVICES    *
+ *****************************/
+
+static inline smt_core_t *egraph_backend(egraph_t *egraph) {
+  assert(egraph != NULL && egraph->core != NULL);
+  return egraph->core;
+}
+
+bvar_t egraph_new_boolean_variable(egraph_t *egraph) {
+  return create_boolean_variable(egraph_backend(egraph));
+}
+
+void egraph_add_empty_clause(egraph_t *egraph) {
+  add_empty_clause(egraph_backend(egraph));
+}
+
+void egraph_add_unit_clause(egraph_t *egraph, literal_t l) {
+  add_unit_clause(egraph_backend(egraph), l);
+}
+
+void egraph_add_binary_clause(egraph_t *egraph, literal_t l1, literal_t l2) {
+  add_binary_clause(egraph_backend(egraph), l1, l2);
+}
+
+void egraph_add_clause(egraph_t *egraph, uint32_t n, literal_t *a) {
+  add_clause(egraph_backend(egraph), n, a);
+}
+
+void egraph_propagate_literal(egraph_t *egraph, literal_t l, void *expl) {
+  propagate_literal(egraph_backend(egraph), l, expl);
+}
+
+void egraph_record_conflict(egraph_t *egraph, literal_t *a) {
+  record_theory_conflict(egraph_backend(egraph), a);
+}
+
+void egraph_build_unsat_core(egraph_t *egraph, ivector_t *v) {
+  build_unsat_core(egraph_backend(egraph), v);
+}
+
+
+
+/*****************************
+ *  KERNEL SEARCH LOOP       *
+ *****************************/
+
+/*
+ * The central egraph is now the public search/orchestration entry point for
+ * CDCL(T) solving. The actual Boolean engine remains the embedded SAT backend.
+ */
+
+static void trace_kernel_stats(smt_core_t *core, const char *when, uint32_t level) {
+  trace_printf(core->trace, level,
+               "(%-10s %8"PRIu64" %10"PRIu64" %8"PRIu64" %8"PRIu32" %8"PRIu32" %8"PRIu64" %8"PRIu32" %8"PRIu64" %7.1f)\n",
+               when, core->stats.conflicts, core->stats.decisions, core->stats.random_decisions,
+               num_binary_clauses(core), num_prob_clauses(core), num_prob_literals(core),
+               num_learned_clauses(core), num_learned_literals(core), avg_learned_clause_size(core));
+}
+
+static void trace_kernel_start(smt_core_t *core) {
+  trace_kernel_stats(core, "start:", 1);
+}
+
+static void trace_kernel_restart(smt_core_t *core) {
+  trace_kernel_stats(core, "restart:", 1);
+}
+
+static void trace_kernel_inner_restart(smt_core_t *core) {
+  trace_kernel_stats(core, "inner restart:", 5);
+}
+
+static void trace_kernel_reduce(smt_core_t *core, uint64_t deleted) {
+  trace_kernel_stats(core, "reduce:", 3);
+  trace_printf(core->trace, 4, "(%"PRIu64" clauses deleted)\n", deleted);
+}
+
+static void trace_kernel_done(smt_core_t *core) {
+  trace_kernel_stats(core, "done:", 1);
+  trace_newline(core->trace, 1);
+}
+
+static void process_kernel_assumption(smt_core_t *core, literal_t l) {
+  switch (literal_value(core, l)) {
+  case VAL_UNDEF_FALSE:
+  case VAL_UNDEF_TRUE:
+    decide_literal(core, l);
+    smt_process(core);
+    break;
+
+  case VAL_TRUE:
+    break;
+
+  case VAL_FALSE:
+    save_conflicting_assumption(core, l);
+    break;
+  }
+}
+
+static void kernel_search_loop(smt_core_t *core, uint32_t conflict_bound,
+                               uint32_t *reduce_threshold, double r_factor) {
+  uint64_t max_conflicts;
+  uint64_t deletions;
+  uint32_t r_threshold;
+  literal_t l;
+
+  assert(smt_status(core) == YICES_STATUS_SEARCHING || smt_status(core) == YICES_STATUS_INTERRUPTED);
+
+  max_conflicts = num_conflicts(core) + conflict_bound;
+  r_threshold = *reduce_threshold;
+
+  smt_process(core);
+  while (smt_status(core) == YICES_STATUS_SEARCHING && num_conflicts(core) <= max_conflicts) {
+    if (num_learned_clauses(core) >= r_threshold) {
+      deletions = core->stats.learned_clauses_deleted;
+      reduce_clause_database(core);
+      r_threshold = (uint32_t) (r_threshold * r_factor);
+      trace_kernel_reduce(core, core->stats.learned_clauses_deleted - deletions);
+    }
+
+    if (core->has_assumptions) {
+      l = get_next_assumption(core);
+      if (l != null_literal) {
+        process_kernel_assumption(core, l);
+        continue;
+      }
+    }
+
+    l = select_unassigned_literal(core);
+    if (l == null_literal) {
+      smt_final_check(core);
+    } else {
+      decide_literal(core, l);
+      smt_process(core);
+    }
+  }
+
+  *reduce_threshold = r_threshold;
+}
+
+static void kernel_luby_search_loop(smt_core_t *core, uint32_t conflict_bound,
+                                    uint32_t *reduce_threshold, double r_factor) {
+  uint64_t max_conflicts;
+  uint64_t deletions;
+  uint32_t r_threshold;
+  literal_t l;
+
+  assert(smt_status(core) == YICES_STATUS_SEARCHING || smt_status(core) == YICES_STATUS_INTERRUPTED);
+
+  max_conflicts = num_conflicts(core) + conflict_bound;
+  r_threshold = *reduce_threshold;
+
+  smt_bounded_process(core, max_conflicts);
+  while (smt_status(core) == YICES_STATUS_SEARCHING && num_conflicts(core) < max_conflicts) {
+    if (num_learned_clauses(core) >= r_threshold) {
+      deletions = core->stats.learned_clauses_deleted;
+      reduce_clause_database(core);
+      r_threshold = (uint32_t) (r_threshold * r_factor);
+      trace_kernel_reduce(core, core->stats.learned_clauses_deleted - deletions);
+    }
+
+    if (core->has_assumptions) {
+      l = get_next_assumption(core);
+      if (l != null_literal) {
+        process_kernel_assumption(core, l);
+        continue;
+      }
+    }
+
+    l = select_unassigned_literal(core);
+    if (l == null_literal) {
+      smt_final_check(core);
+    } else {
+      decide_literal(core, l);
+      smt_bounded_process(core, max_conflicts);
+    }
+  }
+
+  *reduce_threshold = r_threshold;
+}
+
+typedef literal_t (*kernel_branching_fun_t)(smt_core_t *core, literal_t l);
+
+static literal_t negative_kernel_branch(smt_core_t *core, literal_t l) {
+  (void) core;
+  return l | 1;
+}
+
+static literal_t positive_kernel_branch(smt_core_t *core, literal_t l) {
+  (void) core;
+  return l & ~1;
+}
+
+static literal_t theory_kernel_branch(smt_core_t *core, literal_t l) {
+  if (bvar_has_atom(core, var_of(l))) {
+    l = core->th_smt.select_polarity(core->th_solver, get_bvar_atom(core, var_of(l)), l);
+  }
+  return l;
+}
+
+static literal_t theory_or_neg_kernel_branch(smt_core_t *core, literal_t l) {
+  if (bvar_has_atom(core, var_of(l))) {
+    return core->th_smt.select_polarity(core->th_solver, get_bvar_atom(core, var_of(l)), l);
+  }
+  return l | 1;
+}
+
+static literal_t theory_or_pos_kernel_branch(smt_core_t *core, literal_t l) {
+  if (bvar_has_atom(core, var_of(l))) {
+    return core->th_smt.select_polarity(core->th_solver, get_bvar_atom(core, var_of(l)), l);
+  }
+  return l & ~1;
+}
+
+static void kernel_special_search_loop(smt_core_t *core, uint32_t conflict_bound,
+                                       uint32_t *reduce_threshold, double r_factor,
+                                       kernel_branching_fun_t branch) {
+  uint64_t max_conflicts;
+  uint64_t deletions;
+  uint32_t r_threshold;
+  literal_t l;
+
+  assert(smt_status(core) == YICES_STATUS_SEARCHING || smt_status(core) == YICES_STATUS_INTERRUPTED);
+
+  max_conflicts = num_conflicts(core) + conflict_bound;
+  r_threshold = *reduce_threshold;
+
+  smt_process(core);
+  while (smt_status(core) == YICES_STATUS_SEARCHING && num_conflicts(core) <= max_conflicts) {
+    if (num_learned_clauses(core) >= r_threshold) {
+      deletions = core->stats.learned_clauses_deleted;
+      reduce_clause_database(core);
+      r_threshold = (uint32_t) (r_threshold * r_factor);
+      trace_kernel_reduce(core, core->stats.learned_clauses_deleted - deletions);
+    }
+
+    if (core->has_assumptions) {
+      l = get_next_assumption(core);
+      if (l != null_literal) {
+        process_kernel_assumption(core, l);
+        continue;
+      }
+    }
+
+    l = select_unassigned_literal(core);
+    if (l == null_literal) {
+      smt_final_check(core);
+    } else {
+      l = branch(core, l);
+      decide_literal(core, l);
+      smt_process(core);
+    }
+  }
+
+  *reduce_threshold = r_threshold;
+}
+
+static void egraph_run_kernel_search(egraph_t *egraph, const param_t *params,
+                                     uint32_t n, const literal_t *a) {
+  smt_core_t *core;
+  bool luby;
+  uint32_t c_threshold, d_threshold;
+  uint32_t u, v, period;
+  uint32_t reduce_threshold;
+
+  core = egraph_backend(egraph);
+  assert(core->th_solver == egraph);
+
+  c_threshold = params->c_threshold;
+  d_threshold = c_threshold;
+  luby = false;
+  u = 1;
+  v = 1;
+  period = c_threshold;
+
+  if (params->fast_restart) {
+    d_threshold = params->d_threshold;
+    luby = params->c_factor == 0.0;
+  }
+
+  reduce_threshold = (uint32_t) (num_prob_clauses(core) * params->r_fraction);
+  if (reduce_threshold < params->r_threshold) {
+    reduce_threshold = params->r_threshold;
+  }
+
+  start_search(core, n, a);
+  trace_kernel_start(core);
+  if (smt_status(core) == YICES_STATUS_SEARCHING) {
+    for (;;) {
+      switch (params->branching) {
+      case BRANCHING_DEFAULT:
+        if (luby) {
+          kernel_luby_search_loop(core, c_threshold, &reduce_threshold, params->r_factor);
+        } else {
+          kernel_search_loop(core, c_threshold, &reduce_threshold, params->r_factor);
+        }
+        break;
+      case BRANCHING_NEGATIVE:
+        kernel_special_search_loop(core, c_threshold, &reduce_threshold, params->r_factor,
+                                   negative_kernel_branch);
+        break;
+      case BRANCHING_POSITIVE:
+        kernel_special_search_loop(core, c_threshold, &reduce_threshold, params->r_factor,
+                                   positive_kernel_branch);
+        break;
+      case BRANCHING_THEORY:
+        kernel_special_search_loop(core, c_threshold, &reduce_threshold, params->r_factor,
+                                   theory_kernel_branch);
+        break;
+      case BRANCHING_TH_NEG:
+        kernel_special_search_loop(core, c_threshold, &reduce_threshold, params->r_factor,
+                                   theory_or_neg_kernel_branch);
+        break;
+      case BRANCHING_TH_POS:
+        kernel_special_search_loop(core, c_threshold, &reduce_threshold, params->r_factor,
+                                   theory_or_pos_kernel_branch);
+        break;
+      }
+
+      if (smt_status(core) != YICES_STATUS_SEARCHING) {
+        break;
+      }
+
+      smt_restart(core);
+
+      if (luby) {
+        if ((u & -u) == v) {
+          u ++;
+          v = 1;
+        } else {
+          v <<= 1;
+        }
+        c_threshold = v * period;
+        trace_kernel_restart(core);
+
+      } else {
+        c_threshold = (uint32_t) (c_threshold * params->c_factor);
+
+        if (c_threshold >= d_threshold) {
+          d_threshold = c_threshold;
+          if (params->fast_restart) {
+            c_threshold = params->c_threshold;
+            d_threshold = (uint32_t) (d_threshold * params->d_factor);
+          }
+          trace_kernel_restart(core);
+        } else {
+          trace_kernel_inner_restart(core);
+        }
+      }
+    }
+  }
+
+  trace_kernel_done(core);
+}
+
+smt_status_t egraph_search(egraph_t *egraph, const param_t *params,
+                           uint32_t n, const literal_t *a) {
+  smt_core_t *core;
+
+  if (params == NULL) {
+    params = get_default_params();
+  }
+
+  core = egraph_backend(egraph);
+  if (smt_status(core) == YICES_STATUS_IDLE) {
+    egraph_run_kernel_search(egraph, params, n, a);
+  }
+
+  return smt_status(core);
 }
 
 

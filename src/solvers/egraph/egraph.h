@@ -35,8 +35,11 @@
  * To build an operational egraph
  * - first call init_egraph
  * - then attach whatever theory solvers are needed (in any order)
- * - initialize the core with the egraph interfaces
- * - then attach the core to the egraph (this must be done last).
+ * - initialize the SAT backend with the egraph interfaces
+ * - then attach the SAT backend to the egraph.
+ *
+ * In the normalized single-orchestrator setup, some satellites may be attached
+ * after the SAT backend exists, provided this happens before search starts.
  */
 
 /*
@@ -102,10 +105,10 @@ extern th_smt_interface_t *egraph_smt_interface(egraph_t *egraph);
 
 
 /*
- * Attach a core solver:
- * - the core must be initialized with the egraph, and the interface
+ * Attach the SAT backend:
+ * - the backend must be initialized with the egraph, and the interface
  *   descriptors returned by the two functions above
- * - until the core is attached, the egraph can't be used
+ * - until the backend is attached, the egraph can't be used
  * - the internal egraph boolean constant is constructed at this point
  */
 extern void egraph_attach_core(egraph_t *egraph, smt_core_t *core);
@@ -114,6 +117,31 @@ extern void egraph_attach_core(egraph_t *egraph, smt_core_t *core);
  * Delete all tables and internal structures
  */
 extern void delete_egraph(egraph_t *egraph);
+
+
+/*****************************
+ *  ORCHESTRATOR SERVICES    *
+ *****************************/
+
+/*
+ * SAT-backend services exposed by the central egraph kernel.
+ * These are thin wrappers over the embedded SAT backend for now, but the
+ * ownership boundary is the egraph rather than the raw smt_core_t.
+ */
+extern bvar_t egraph_new_boolean_variable(egraph_t *egraph);
+extern void egraph_add_empty_clause(egraph_t *egraph);
+extern void egraph_add_unit_clause(egraph_t *egraph, literal_t l);
+extern void egraph_add_binary_clause(egraph_t *egraph, literal_t l1, literal_t l2);
+extern void egraph_add_clause(egraph_t *egraph, uint32_t n, literal_t *a);
+extern void egraph_propagate_literal(egraph_t *egraph, literal_t l, void *expl);
+extern void egraph_record_conflict(egraph_t *egraph, literal_t *a);
+extern void egraph_build_unsat_core(egraph_t *egraph, ivector_t *v);
+
+/*
+ * Search entry point for the egraph-centered CDCL(T) kernel.
+ */
+extern smt_status_t egraph_search(egraph_t *egraph, const param_t *params,
+                                  uint32_t n, const literal_t *a);
 
 
 

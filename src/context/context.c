@@ -30,6 +30,7 @@
 #include "solvers/bv/bvsolver.h"
 #include "solvers/floyd_warshall/idl_floyd_warshall.h"
 #include "solvers/floyd_warshall/rdl_floyd_warshall.h"
+#include "solvers/egraph/egraph.h"
 #include "solvers/funs/fun_solver.h"
 #include "solvers/quant/quant_solver.h"
 #include "solvers/simplex/simplex.h"
@@ -98,7 +99,7 @@ static eterm_t make_egraph_variable(context_t *ctx, type_t type) {
   bvar_t v;
 
   if (type == bool_type(ctx->types)) {
-    v = create_boolean_variable(ctx->core);
+    v = egraph_new_boolean_variable(ctx->egraph);
     u = egraph_bvar2term(ctx->egraph, v);
   } else {
     //    u = egraph_make_variable(ctx->egraph, type);
@@ -106,6 +107,50 @@ static eterm_t make_egraph_variable(context_t *ctx, type_t type) {
     u = egraph_skolem_term(ctx->egraph, type);
   }
   return u;
+}
+
+
+/*
+ * Context-level access to the SAT backend goes through the central egraph when
+ * the kernel is present.
+ */
+static inline bvar_t context_new_boolean_variable(context_t *ctx) {
+  if (context_has_egraph(ctx)) {
+    return egraph_new_boolean_variable(ctx->egraph);
+  }
+  return create_boolean_variable(ctx->core);
+}
+
+static inline void context_add_empty_clause(context_t *ctx) {
+  if (context_has_egraph(ctx)) {
+    egraph_add_empty_clause(ctx->egraph);
+  } else {
+    add_empty_clause(ctx->core);
+  }
+}
+
+static inline void context_add_unit_clause(context_t *ctx, literal_t l) {
+  if (context_has_egraph(ctx)) {
+    egraph_add_unit_clause(ctx->egraph, l);
+  } else {
+    add_unit_clause(ctx->core, l);
+  }
+}
+
+static inline void context_add_binary_clause(context_t *ctx, literal_t l1, literal_t l2) {
+  if (context_has_egraph(ctx)) {
+    egraph_add_binary_clause(ctx->egraph, l1, l2);
+  } else {
+    add_binary_clause(ctx->core, l1, l2);
+  }
+}
+
+static inline void context_add_clause(context_t *ctx, uint32_t n, literal_t *a) {
+  if (context_has_egraph(ctx)) {
+    egraph_add_clause(ctx->egraph, n, a);
+  } else {
+    add_clause(ctx->core, n, a);
+  }
 }
 
 
@@ -413,7 +458,7 @@ static occ_t map_conditional_to_eterm(context_t *ctx, conditional_t *c, type_t t
       // one clause for a[i] => (u = v[i])
       v = internalize_to_eterm(ctx, c->pair[i].val);
       l = egraph_make_eq(ctx->egraph, u, v);
-      add_binary_clause(ctx->core, not(a[i]), l);
+      context_add_binary_clause(ctx, not(a[i]), l);
     }
   }
 
@@ -428,7 +473,7 @@ static occ_t map_conditional_to_eterm(context_t *ctx, conditional_t *c, type_t t
   v = internalize_to_eterm(ctx, c->defval);
   l = egraph_make_eq(ctx->egraph, u, v);
   a[n] = l;
-  add_clause(ctx->core, n+1, a);
+  context_add_clause(ctx, n+1, a);
 
  done:
   free_istack_array(&ctx->istack, a);
@@ -518,7 +563,7 @@ static occ_t flatten_ite_to_eterm(context_t *ctx, composite_term_t *ite, literal
       ite_flattener_get_clause(flattener, buffer);
       ite_prepare_antecedents(buffer);
       ivector_push(buffer, l);
-      add_clause(ctx->core, buffer->size, buffer->data);
+      context_add_clause(ctx, buffer->size, buffer->data);
       ivector_reset(buffer);
 
       ite_flattener_next_branch(flattener);
@@ -959,7 +1004,7 @@ static void assert_abs_axioms(context_t *ctx, thvar_t x, thvar_t y) {
   l2 = ctx->arith.create_poly_eq_atom(ctx->arith_solver, p, map);
 
   // assert (or l1 l2)
-  add_binary_clause(ctx->core, l1, l2);
+  context_add_binary_clause(ctx, l1, l2);
 }
 
 
@@ -3197,7 +3242,7 @@ static literal_t internalize_to_literal(context_t *ctx, term_t t) {
       break;
 
     case UNINTERPRETED_TERM:
-      l = pos_lit(create_boolean_variable(ctx->core));
+      l = pos_lit(context_new_boolean_variable(ctx));
       break;
 
     case ITE_TERM:
@@ -3258,7 +3303,7 @@ static literal_t internalize_to_literal(context_t *ctx, term_t t) {
         longjmp(ctx->env, QUANTIFIERS_NOT_SUPPORTED);
       }
       // lax mode: turn forall into a proposition
-      l = pos_lit(create_boolean_variable(ctx->core));
+      l = pos_lit(context_new_boolean_variable(ctx));
       break;
 
     case BIT_TERM:
@@ -3320,13 +3365,13 @@ static void assert_internalization_code(context_t *ctx, int32_t x, bool tt) {
         egraph_assert_axiom(ctx->egraph, g);
       } else {
         l = egraph_make_eq(ctx->egraph, g, true_occ);
-        add_unit_clause(ctx->core, l);
+        context_add_unit_clause(ctx, l);
       }
     }
   } else {
     l = code2literal(x);
     if (! tt) l = not(l);
-    add_unit_clause(ctx->core, l);
+    context_add_unit_clause(ctx, l);
   }
 }
 
@@ -3735,9 +3780,9 @@ static void assert_arith_bineq_aux(context_t *ctx, term_t t1, term_t t2, bool tt
     } else {
       literal_t l = egraph_make_eq(ctx->egraph, u, v);
       if (tt) {
-        add_unit_clause(ctx->core, l);
+        context_add_unit_clause(ctx, l);
       } else {
-        add_unit_clause(ctx->core, not(l));
+        context_add_unit_clause(ctx, not(l));
       }
     }
   } else {
@@ -3792,9 +3837,9 @@ static void assert_toplevel_apply(context_t *ctx, composite_term_t *app, bool tt
   } else {
     literal_t l = egraph_make_pred(ctx->egraph, a[0], n-1, a+1);
     if (tt) {
-      add_unit_clause(ctx->core, l);
+      context_add_unit_clause(ctx, l);
     } else {
-      add_unit_clause(ctx->core, not(l));
+      context_add_unit_clause(ctx, not(l));
     }
   }
 
@@ -3818,7 +3863,7 @@ static void assert_toplevel_select(context_t *ctx, select_term_t *select, bool t
     egraph_assert_axiom(ctx->egraph, u);
   } else {
     literal_t l = egraph_make_eq(ctx->egraph, u, true_occ);
-    add_unit_clause(ctx->core, l);
+    context_add_unit_clause(ctx, l);
   }
 }
 
@@ -3900,9 +3945,9 @@ static void assert_toplevel_eq(context_t *ctx, composite_term_t *eq, bool tt) {
     } else {
       literal_t l = egraph_make_eq(ctx->egraph, u1, u2);
       if (tt) {
-        add_unit_clause(ctx->core, l);
+        context_add_unit_clause(ctx, l);
       } else {
-        add_unit_clause(ctx->core, not(l));
+        context_add_unit_clause(ctx, not(l));
       }
     }
   }
@@ -3920,7 +3965,7 @@ static void assert_arith_distinct(context_t *ctx, uint32_t n, thvar_t *a, bool t
   if (! tt) {
     l = not(l);
   }
-  add_unit_clause(ctx->core, l);
+  context_add_unit_clause(ctx, l);
 }
 
 
@@ -3935,7 +3980,7 @@ static void assert_bv_distinct(context_t *ctx, uint32_t n, thvar_t *a, bool tt) 
   if (! tt) {
     l = not(l);
   }
-  add_unit_clause(ctx->core, l);
+  context_add_unit_clause(ctx, l);
 }
 
 
@@ -3972,9 +4017,9 @@ static void assert_toplevel_distinct(context_t *ctx, composite_term_t *distinct,
     } else {
       literal_t l = egraph_make_distinct(ctx->egraph, n, a);
       if (tt) {
-        add_unit_clause(ctx->core, l);
+        context_add_unit_clause(ctx, l);
       } else {
-        add_unit_clause(ctx->core, not(l));
+        context_add_unit_clause(ctx, not(l));
       }
     }
 
@@ -4067,7 +4112,7 @@ static void assert_arith_bineq(context_t *ctx, term_t t1, term_t u1, bool tt) {
       }
       a[n] = not(map_arith_bineq_aux(ctx, t2, u2));
 
-      add_clause(ctx->core, n+1, a);
+      context_add_clause(ctx, n+1, a);
     }
 
     free_istack_array(&ctx->istack, a);
@@ -4332,7 +4377,7 @@ static void assert_toplevel_conditional(context_t *ctx, conditional_t *c, bool t
     if (a[i] != false_literal) {
       // l = value for pair[i]
       l = signed_literal(internalize_to_literal(ctx, c->pair[i].val), tt);
-      add_binary_clause(ctx->core, not(a[i]), l); // a[i] => v[i]
+      context_add_binary_clause(ctx, not(a[i]), l); // a[i] => v[i]
       all_false = false;
     }
   }
@@ -4345,7 +4390,7 @@ static void assert_toplevel_conditional(context_t *ctx, conditional_t *c, bool t
 
   // last clause: (a[0] \/ .... \/ a[n] \/ +/-defval)
   a[n] = signed_literal(internalize_to_literal(ctx, c->defval), tt);
-  add_clause(ctx->core, n+1, a);
+  context_add_clause(ctx, n+1, a);
 
   // cleanup
  done:
@@ -4440,7 +4485,7 @@ static void assert_toplevel_or(context_t *ctx, composite_term_t *or, bool tt) {
     }
 
     // assert (or a[0] ... a[n-1])
-    add_clause(ctx->core, n, a);
+    context_add_clause(ctx, n, a);
 
   done:
     free_istack_array(&ctx->istack, a);
@@ -4969,8 +5014,11 @@ static const uint32_t arch2theories[NUM_ARCH] = {
  * Each architecture has a fixed set of solver components:
  * - the set of components is stored as a bit vector (on 8bits)
  * - this uses the following bit-masks
- * For the AUTO_xxx architecture, nothing is required initially,
- * so the bitmask is 0.
+ * - in the egraph-centered CDCL(T) architecture, all non-MCSAT contexts
+ *   instantiate the central egraph kernel and the old standalone CDCL(T)
+ *   architectures are aliases onto that kernel.
+ * For the AUTO_xxx architectures, the kernel is created immediately and the
+ * arithmetic satellite is selected later.
  */
 #define EGRPH  0x1
 #define SPLX   0x2
@@ -4981,13 +5029,13 @@ static const uint32_t arch2theories[NUM_ARCH] = {
 #define MCSAT  0x40
 
 static const uint8_t arch_components[NUM_ARCH] = {
-  0,                        //  CTX_ARCH_NOSOLVERS
+  EGRPH,                    //  CTX_ARCH_NOSOLVERS
 
   EGRPH,                    //  CTX_ARCH_EG
-  SPLX,                     //  CTX_ARCH_SPLX
-  IFW,                      //  CTX_ARCH_IFW
-  RFW,                      //  CTX_ARCH_RFW
-  BVSLVR,                   //  CTX_ARCH_BV
+  EGRPH|SPLX,               //  CTX_ARCH_SPLX
+  EGRPH|SPLX,               //  CTX_ARCH_IFW (aliased onto the kernel + simplex)
+  EGRPH|SPLX,               //  CTX_ARCH_RFW (aliased onto the kernel + simplex)
+  EGRPH|BVSLVR,             //  CTX_ARCH_BV
   EGRPH|FSLVR,              //  CTX_ARCH_EGFUN
   EGRPH|SPLX,               //  CTX_ARCH_EGSPLX
   EGRPH|BVSLVR,             //  CTX_ARCH_EGBV
@@ -4996,8 +5044,8 @@ static const uint8_t arch_components[NUM_ARCH] = {
   EGRPH|SPLX|BVSLVR,        //  CTX_ARCH_EGSPLXBV
   EGRPH|SPLX|BVSLVR|FSLVR,  //  CTX_ARCH_EGFUNSPLXBV
 
-  0,                        //  CTX_ARCH_AUTO_IDL
-  0,                        //  CTX_ARCH_AUTO_RDL
+  EGRPH,                    //  CTX_ARCH_AUTO_IDL
+  EGRPH,                    //  CTX_ARCH_AUTO_RDL
 
   MCSAT                     //  CTX_ARCH_MCSAT
 };
@@ -5195,8 +5243,9 @@ bool context_arch_has_rfw(context_arch_t arch) {
  ***************************/
 
 /*
- * Create and initialize the egraph
- * - the core must be created first
+ * Create and initialize the central egraph kernel.
+ * - the SAT backend is allocated before this, but initialized after all
+ *   satellites are attached to the kernel.
  */
 static void create_egraph(context_t *ctx) {
   egraph_t *egraph;
@@ -5343,6 +5392,16 @@ static void create_auto_idl_solver(context_t *ctx) {
   assert(ctx->dl_profile != NULL);
   profile = ctx->dl_profile;
 
+  if (ctx->egraph != NULL) {
+    /*
+     * The single-orchestrator kernel forbids standalone FW backends.
+     * For now, auto-IDL is normalized onto the egraph+simplex path.
+     */
+    create_simplex_solver(ctx, true);
+    ctx->arch = CTX_ARCH_SPLX;
+    return;
+  }
+
   if (q_is_smallint(&profile->path_bound)) {
     bound = q_get_smallint(&profile->path_bound);
   } else {
@@ -5396,6 +5455,16 @@ static void create_auto_rdl_solver(context_t *ctx) {
 
   assert(ctx->dl_profile != NULL);
   profile = ctx->dl_profile;
+
+  if (ctx->egraph != NULL) {
+    /*
+     * The single-orchestrator kernel forbids standalone FW backends.
+     * For now, auto-RDL is normalized onto the egraph+simplex path.
+     */
+    create_simplex_solver(ctx, true);
+    ctx->arch = CTX_ARCH_SPLX;
+    return;
+  }
 
   if (profile->num_vars >= 1000) {
     create_simplex_solver(ctx, true);
@@ -5482,9 +5551,9 @@ static void create_fun_solver(context_t *ctx) {
 /*
  * Allocate and initialize solvers based on architecture and mode
  * - core and gate manager must exist at this point
- * - if the architecture is either AUTO_IDL or AUTO_RDL, no theory solver
- *   is allocated yet, and the core is initialized for Boolean only
- * - otherwise, all components are ready and initialized, including the core.
+ * - for AUTO_IDL/AUTO_RDL, the kernel is created immediately and the arithmetic
+ *   satellite is attached later after preprocessing.
+ * - otherwise, all components are ready and initialized, including the SAT backend.
  */
 static void init_solvers(context_t *ctx) {
   uint8_t solvers;
@@ -5560,9 +5629,11 @@ static void init_solvers(context_t *ctx) {
   }
 
   /*
-   * Optimization: if the arch is NOSOLVERS or BV then we set bool_only in the core
+   * Optimization: only standalone SAT-backend paths can use bool_only.
+   * Egraph-centered kernels must keep theory dispatch enabled even for
+   * lightweight/non-UF configurations.
    */
-  if (ctx->arch == CTX_ARCH_NOSOLVERS || ctx->arch == CTX_ARCH_BV) {
+  if (ctx->egraph == NULL && (ctx->arch == CTX_ARCH_NOSOLVERS || ctx->arch == CTX_ARCH_BV)) {
     smt_core_set_bool_only(core);
   }
 }
@@ -6244,7 +6315,7 @@ int32_t _o_assert_formulas(context_t *ctx, uint32_t n, const term_t *f) {
 
     if( smt_status(ctx->core) != YICES_STATUS_UNSAT) {
       // force UNSAT in the core
-      add_empty_clause(ctx->core);
+      context_add_empty_clause(ctx);
       ctx->core->status = YICES_STATUS_UNSAT;
     }
   }
@@ -6282,7 +6353,7 @@ int32_t quant_assert_formulas(context_t *ctx, uint32_t n, const term_t *f) {
 
     if( smt_status(ctx->core) != YICES_STATUS_UNSAT) {
       // force UNSAT in the core
-      add_empty_clause(ctx->core);
+      context_add_empty_clause(ctx);
       ctx->core->status = YICES_STATUS_UNSAT;
     }
   }
@@ -6378,8 +6449,8 @@ int32_t context_add_assumption(context_t *ctx, term_t t) {
     l = context_internalize(ctx, t);
     if (l < 0) return l; // error code
 
-    x = pos_lit(create_boolean_variable(ctx->core));
-    add_binary_clause(ctx->core, not(x), l); // clause (x implies l)
+    x = pos_lit(context_new_boolean_variable(ctx));
+    context_add_binary_clause(ctx, not(x), l); // clause (x implies l)
 
     assumption_stack_add(&ctx->assumptions, t, x);
   }
@@ -6646,7 +6717,7 @@ int32_t assert_blocking_clause(context_t *ctx) {
   internalization_start(ctx->core);
 
   // add the blocking clause
-  add_clause(ctx->core, n, v->data);
+  context_add_clause(ctx, n, v->data);
   ivector_reset(v);
 
   // force UNSAT if n = 0
