@@ -69,7 +69,7 @@ static uint32_t hash_arith_atom(uint32_t header, rational_t *bound) {
 /*
  * Initialize: use default sizes
  */
-void init_arith_atomtable(arith_atomtable_t *table, smt_core_t *core) {
+void init_arith_atomtable(arith_atomtable_t *table, egraph_t *egraph) {
   uint32_t n;
 
   n = DEF_ARITHATOMTABLE_SIZE;
@@ -80,7 +80,7 @@ void init_arith_atomtable(arith_atomtable_t *table, smt_core_t *core) {
   table->atoms = (arith_atom_t *) safe_malloc(n * sizeof(arith_atom_t));
   table->mark = allocate_bitvector(n);
 
-  table->core = core;
+  table->egraph = egraph;
   init_int_htbl(&table->htbl, 0);
   q_init(&table->aux);
 }
@@ -122,8 +122,8 @@ static int32_t new_arith_atom(arith_atomtable_t *table, uint32_t header, rationa
   assert(i < table->size);
 
   // new boolean variable
-  x = create_boolean_variable(table->core);
-  attach_atom_to_bvar(table->core, x, arithatom_idx2tagged_ptr(i));
+  x = egraph_new_boolean_variable(table->egraph);
+  egraph_attach_atom_to_bvar(table->egraph, x, arithatom_idx2tagged_ptr(i));
 
   // initialize the atom descriptor
   table->atoms[i].header = header;
@@ -215,7 +215,7 @@ int32_t arith_atom_id_for_bvar(arith_atomtable_t *table, bvar_t v) {
   void *a;
   int32_t id;
 
-  a = bvar_atom(table->core, v);
+  a = egraph_bvar_atom(table->egraph, v);
   if (a != NULL && atom_tag(a) == ARITH_ATM_TAG) {
     id = arithatom_tagged_ptr2idx(a);
     assert(boolvar_of_atom(arith_atom(table, id)) == v);
@@ -234,7 +234,7 @@ arith_atom_t *arith_atom_for_bvar(arith_atomtable_t *table, bvar_t v) {
   void *a;
   int32_t id;
 
-  a = bvar_atom(table->core, v);
+  a = egraph_bvar_atom(table->egraph, v);
   if (a != NULL && atom_tag(a) == ARITH_ATM_TAG) {
     id = arithatom_tagged_ptr2idx(a);
     assert(boolvar_of_atom(arith_atom(table, id)) == v);

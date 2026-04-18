@@ -5268,63 +5268,23 @@ static void create_mcsat(context_t *ctx) {
 
 
 
+static void create_simplex_solver(context_t *ctx, bool automatic);
+
 /*
- * Create and initialize the idl solver and attach it to the core
- * - there must be no other solvers and no egraph
- * - if automatic is true, attach the solver to the core, otherwise
- *   initialize the core
- * - copy the solver's internalization interface into arith
+ * Retired FW constructor: keep the entry point as an alias onto the
+ * egraph-centered simplex satellite.
  */
 static void create_idl_solver(context_t *ctx, bool automatic) {
-  idl_solver_t *solver;
-  smt_mode_t cmode;
-
-  assert(ctx->egraph == NULL && ctx->arith_solver == NULL && ctx->bv_solver == NULL &&
-         ctx->fun_solver == NULL && ctx->core != NULL);
-
-  cmode = core_mode[ctx->mode];
-  solver = (idl_solver_t *) safe_malloc(sizeof(idl_solver_t));
-  init_idl_solver(solver, ctx->core, &ctx->gate_manager);
-  if (automatic) {
-    smt_core_reset_thsolver(ctx->core, solver, idl_ctrl_interface(solver),
-			    idl_smt_interface(solver));
-  } else {
-    init_smt_core(ctx->core, CTX_DEFAULT_CORE_SIZE, solver, idl_ctrl_interface(solver),
-		  idl_smt_interface(solver), cmode);
-  }
-  idl_solver_init_jmpbuf(solver, &ctx->env);
-  ctx->arith_solver = solver;
-  ctx->arith = *idl_arith_interface(solver);
+  create_simplex_solver(ctx, automatic);
 }
 
 
 /*
- * Create and initialize the rdl solver and attach it to the core.
- * - there must be no other solvers and no egraph
- * - if automatic is true, attach rdl to the core, otherwise
- *   initialize the core
- * - copy the solver's internalization interface in ctx->arith
+ * Retired FW constructor: keep the entry point as an alias onto the
+ * egraph-centered simplex satellite.
  */
 static void create_rdl_solver(context_t *ctx, bool automatic) {
-  rdl_solver_t *solver;
-  smt_mode_t cmode;
-
-  assert(ctx->egraph == NULL && ctx->arith_solver == NULL && ctx->bv_solver == NULL &&
-         ctx->fun_solver == NULL && ctx->core != NULL);
-
-  cmode = core_mode[ctx->mode];
-  solver = (rdl_solver_t *) safe_malloc(sizeof(rdl_solver_t));
-  init_rdl_solver(solver, ctx->core, &ctx->gate_manager);
-  if (automatic) {
-    smt_core_reset_thsolver(ctx->core, solver, rdl_ctrl_interface(solver),
-			    rdl_smt_interface(solver));
-  } else {
-    init_smt_core(ctx->core, CTX_DEFAULT_CORE_SIZE, solver, rdl_ctrl_interface(solver),
-		  rdl_smt_interface(solver), cmode);
-  }
-  rdl_solver_init_jmpbuf(solver, &ctx->env);
-  ctx->arith_solver = solver;
-  ctx->arith = *rdl_arith_interface(solver);
+  create_simplex_solver(ctx, automatic);
 }
 
 
@@ -5338,11 +5298,11 @@ static void create_simplex_solver(context_t *ctx, bool automatic) {
   simplex_solver_t *solver;
   smt_mode_t cmode;
 
-  assert(ctx->arith_solver == NULL && ctx->core != NULL);
+  assert(ctx->arith_solver == NULL && ctx->core != NULL && ctx->egraph != NULL);
 
   cmode = core_mode[ctx->mode];
   solver = (simplex_solver_t *) safe_malloc(sizeof(simplex_solver_t));
-  init_simplex_solver(solver, ctx->core, &ctx->gate_manager, ctx->egraph);
+  init_simplex_solver(solver, &ctx->gate_manager, ctx->egraph);
 
   // set simplex options
   if (splx_eager_lemmas_enabled(ctx)) {
@@ -5360,20 +5320,11 @@ static void create_simplex_solver(context_t *ctx, bool automatic) {
     simplex_enable_row_saving(solver);
   }
 
-  if (ctx->egraph != NULL) {
-    // attach the simplex solver as a satellite solver to the egraph
-    egraph_attach_arithsolver(ctx->egraph, solver, simplex_ctrl_interface(solver),
-                              simplex_smt_interface(solver), simplex_egraph_interface(solver),
-                              simplex_arith_egraph_interface(solver));
-  } else if (!automatic) {
-    // attach simplex to the core and initialize the core
-    init_smt_core(ctx->core, CTX_DEFAULT_CORE_SIZE, solver, simplex_ctrl_interface(solver),
-                  simplex_smt_interface(solver), cmode);
-  } else {
-    // the core is already initialized: attach simplex
-    smt_core_reset_thsolver(ctx->core, solver, simplex_ctrl_interface(solver),
-			    simplex_smt_interface(solver));
-  }
+  (void) automatic;
+  (void) cmode;
+  egraph_attach_arithsolver(ctx->egraph, solver, simplex_ctrl_interface(solver),
+                            simplex_smt_interface(solver), simplex_egraph_interface(solver),
+                            simplex_arith_egraph_interface(solver));
 
   simplex_solver_init_jmpbuf(solver, &ctx->env);
   ctx->arith_solver = solver;
@@ -5503,22 +5454,15 @@ static void create_bv_solver(context_t *ctx) {
   bv_solver_t *solver;
   smt_mode_t cmode;
 
-  assert(ctx->bv_solver == NULL && ctx->core != NULL);
+  assert(ctx->bv_solver == NULL && ctx->core != NULL && ctx->egraph != NULL);
 
   cmode = core_mode[ctx->mode];
   solver = (bv_solver_t *) safe_malloc(sizeof(bv_solver_t));
-  init_bv_solver(solver, ctx->core, ctx->egraph);
-
-  if (ctx->egraph != NULL) {
-    // attach as a satellite to the egraph
-    egraph_attach_bvsolver(ctx->egraph, solver, bv_solver_ctrl_interface(solver),
-                           bv_solver_smt_interface(solver), bv_solver_egraph_interface(solver),
-                           bv_solver_bv_egraph_interface(solver));
-  } else {
-    // attach to the core and initialize the core
-    init_smt_core(ctx->core, CTX_DEFAULT_CORE_SIZE, solver, bv_solver_ctrl_interface(solver),
-                  bv_solver_smt_interface(solver), cmode);
-  }
+  init_bv_solver(solver, ctx->egraph);
+  (void) cmode;
+  egraph_attach_bvsolver(ctx->egraph, solver, bv_solver_ctrl_interface(solver),
+                         bv_solver_smt_interface(solver), bv_solver_egraph_interface(solver),
+                         bv_solver_bv_egraph_interface(solver));
 
   // EXPERIMENT
   //  smt_core_make_etable(ctx->core);
@@ -5539,7 +5483,7 @@ static void create_fun_solver(context_t *ctx) {
   assert(ctx->egraph != NULL && ctx->fun_solver == NULL);
 
   solver = (fun_solver_t *) safe_malloc(sizeof(fun_solver_t));
-  init_fun_solver(solver, ctx->core, &ctx->gate_manager, ctx->egraph, ctx->types);
+  init_fun_solver(solver, &ctx->gate_manager, ctx->egraph, ctx->types);
   egraph_attach_funsolver(ctx->egraph, solver, fun_solver_ctrl_interface(solver),
                           fun_solver_egraph_interface(solver),
                           fun_solver_fun_egraph_interface(solver));

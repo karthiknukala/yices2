@@ -44,8 +44,7 @@
 #include <stddef.h>
 #include <assert.h>
 
-#include "solvers/cdcl/smt_core.h"
-#include "solvers/egraph/egraph_base_types.h"
+#include "solvers/egraph/egraph.h"
 #include "terms/rationals.h"
 #include "utils/bitvectors.h"
 #include "utils/int_hash_tables.h"
@@ -150,8 +149,8 @@ typedef struct arith_atomtable_s {
   arith_atom_t *atoms;
   byte_t *mark;
 
-  // pointer to the smt_core object
-  smt_core_t *core;
+  // pointer to the central egraph kernel
+  egraph_t *egraph;
 
   // table for hash consing
   int_htbl_t htbl;
@@ -173,9 +172,9 @@ typedef struct arith_atomtable_s {
 /*
  * Initialization:
  * - all data structures are allocated with their default initial size
- * - core = smt_core attached to the arithmetic solver.
+ * - egraph = attached egraph kernel.
  */
-extern void init_arith_atomtable(arith_atomtable_t *table, smt_core_t *core);
+extern void init_arith_atomtable(arith_atomtable_t *table, egraph_t *egraph);
 
 
 /*

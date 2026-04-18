@@ -31,10 +31,9 @@
 
 /*
  * Initialize a bit-vector solver
- * - core = the attached smt core
- * - egraph = the attached egraph (or NULL)
+ * - egraph = the attached egraph kernel
  */
-extern void init_bv_solver(bv_solver_t *solver, smt_core_t *core, egraph_t *egraph);
+extern void init_bv_solver(bv_solver_t *solver, egraph_t *egraph);
 
 
 /*

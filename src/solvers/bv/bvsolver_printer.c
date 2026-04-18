@@ -525,8 +525,8 @@ void print_bv_solver_atom_of_literal(FILE *f, bv_solver_t *solver, literal_t l) 
   int32_t id;
 
   v = var_of(l);
-  assert(bvar_has_atom(solver->core, v));
-  atm = bvar_atom(solver->core, v);
+  assert(egraph_bvar_has_atom(solver->egraph, v));
+  atm = egraph_bvar_atom(solver->egraph, v);
   assert(atom_tag(atm) == BV_ATM_TAG);
   id = bvatom_tagged_ptr2idx(atm);
 
@@ -693,7 +693,7 @@ static void print_bv_solver_bound(FILE *f, bv_solver_t *solver, bv_bound_t *b) {
 
   fputs(" --> ", f);
   x = bvatm_bvar(atm);
-  print_bval(f, bvar_base_value(solver->core, x));
+  print_bval(f, egraph_bvar_base_value(solver->egraph, x));
 }
 
 

@@ -55,7 +55,6 @@
 #include "solvers/bv/bvpoly_compiler.h"
 #include "solvers/bv/merge_table.h"
 #include "solvers/bv/remap_table.h"
-#include "solvers/cdcl/smt_core.h"
 #include "solvers/egraph/egraph.h"
 #include "solvers/egraph/egraph_assertion_queues.h"
 #include "terms/bvpoly_buffers.h"
@@ -281,9 +280,8 @@ typedef struct bv_stats_s {
 
 typedef struct bv_solver_s {
   /*
-   * Attached smt core + egraph
+   * Attached egraph kernel
    */
-  smt_core_t *core;
   egraph_t *egraph;
 
   /*

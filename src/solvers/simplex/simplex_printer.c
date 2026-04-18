@@ -179,7 +179,7 @@ void print_arith_atomtable(FILE *f, arith_vartable_t *vtbl, arith_atomtable_t *a
     fputs(" := ", f);
     print_arith_atom(f, vtbl, a + i);
     fputs("\t\t", f);
-    print_bval(f, bvar_value(atbl->core, a[i].boolvar));
+    print_bval(f, egraph_bvar_value(atbl->egraph, a[i].boolvar));
     fputc('\n', f);
   }
 }
@@ -562,7 +562,7 @@ void print_simplex_atomdef(FILE *f, simplex_solver_t *solver, bvar_t v) {
   arith_atom_t *a;
   int32_t i;
 
-  atm = get_bvar_atom(solver->core, v);
+  atm = egraph_bvar_atom(solver->egraph, v);
   i = arithatom_tagged_ptr2idx(atm);
   a = arith_atom(&solver->atbl, i);
   assert(a->boolvar == v);
@@ -580,8 +580,8 @@ void print_simplex_atom_of_literal(FILE *f, simplex_solver_t *solver, literal_t 
   int32_t i;
 
   v = var_of(l);
-  assert(bvar_has_atom(solver->core, v));
-  atm = bvar_atom(solver->core, v);
+  assert(egraph_bvar_has_atom(solver->egraph, v));
+  atm = egraph_bvar_atom(solver->egraph, v);
   assert(atom_tag(atm) == ARITH_ATM_TAG);
   i = arithatom_tagged_ptr2idx(atm);
   a = arith_atom(&solver->atbl, i);
@@ -741,5 +741,4 @@ void print_simplex_bounds2(FILE *f, simplex_solver_t *solver) {
     }
   }
 }
-
 

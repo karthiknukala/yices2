@@ -26,6 +26,7 @@
 #include <inttypes.h>
 
 #include "io/tracer.h"
+#include "solvers/cdcl/smt_core_printer.h"
 #include "solvers/egraph/composites.h"
 #include "solvers/egraph/egraph.h"
 #include "solvers/egraph/egraph_explanations.h"
@@ -7083,6 +7084,14 @@ bvar_t egraph_new_boolean_variable(egraph_t *egraph) {
   return create_boolean_variable(egraph_backend(egraph));
 }
 
+void egraph_attach_atom_to_bvar(egraph_t *egraph, bvar_t v, void *atom) {
+  attach_atom_to_bvar(egraph_backend(egraph), v, atom);
+}
+
+void egraph_remove_bvar_atom(egraph_t *egraph, bvar_t v) {
+  remove_bvar_atom(egraph_backend(egraph), v);
+}
+
 void egraph_add_empty_clause(egraph_t *egraph) {
   add_empty_clause(egraph_backend(egraph));
 }
@@ -7095,20 +7104,80 @@ void egraph_add_binary_clause(egraph_t *egraph, literal_t l1, literal_t l2) {
   add_binary_clause(egraph_backend(egraph), l1, l2);
 }
 
+void egraph_add_ternary_clause(egraph_t *egraph, literal_t l1, literal_t l2, literal_t l3) {
+  add_ternary_clause(egraph_backend(egraph), l1, l2, l3);
+}
+
 void egraph_add_clause(egraph_t *egraph, uint32_t n, literal_t *a) {
   add_clause(egraph_backend(egraph), n, a);
+}
+
+void egraph_implied_literal(egraph_t *egraph, literal_t l, antecedent_t a) {
+  implied_literal(egraph_backend(egraph), l, a);
 }
 
 void egraph_propagate_literal(egraph_t *egraph, literal_t l, void *expl) {
   propagate_literal(egraph_backend(egraph), l, expl);
 }
 
+void egraph_record_empty_conflict(egraph_t *egraph) {
+  record_empty_theory_conflict(egraph_backend(egraph));
+}
+
+void egraph_record_unit_conflict(egraph_t *egraph, literal_t l) {
+  record_unit_theory_conflict(egraph_backend(egraph), l);
+}
+
+void egraph_record_binary_conflict(egraph_t *egraph, literal_t l1, literal_t l2) {
+  record_binary_theory_conflict(egraph_backend(egraph), l1, l2);
+}
+
+void egraph_record_ternary_conflict(egraph_t *egraph, literal_t l1, literal_t l2, literal_t l3) {
+  record_ternary_theory_conflict(egraph_backend(egraph), l1, l2, l3);
+}
+
 void egraph_record_conflict(egraph_t *egraph, literal_t *a) {
   record_theory_conflict(egraph_backend(egraph), a);
 }
 
+uint32_t egraph_add_quant_lemmas(egraph_t *egraph, literal_t en, ivector_t *units) {
+  return add_all_quant_lemmas(egraph_backend(egraph), en, units);
+}
+
 void egraph_build_unsat_core(egraph_t *egraph, ivector_t *v) {
   build_unsat_core(egraph_backend(egraph), v);
+}
+
+void egraph_bump_conflicts(egraph_t *egraph, uint64_t delta) {
+  egraph_backend(egraph)->stats.conflicts += delta;
+}
+
+void egraph_collect_free_bool_vars(egraph_t *egraph, free_bool_vars_t *fv) {
+  collect_free_bool_vars(fv, egraph_backend(egraph));
+}
+
+void egraph_print_binary_clauses(FILE *f, egraph_t *egraph) {
+  print_binary_clauses(f, egraph_backend(egraph));
+}
+
+void egraph_print_problem_clauses(FILE *f, egraph_t *egraph) {
+  print_problem_clauses(f, egraph_backend(egraph));
+}
+
+void egraph_print_learned_clauses(FILE *f, egraph_t *egraph) {
+  print_learned_clauses(f, egraph_backend(egraph));
+}
+
+void egraph_print_lemmas(FILE *f, egraph_t *egraph) {
+  print_lemmas(f, egraph_backend(egraph));
+}
+
+void egraph_print_clauses(FILE *f, egraph_t *egraph) {
+  print_clauses(f, egraph_backend(egraph));
+}
+
+void egraph_print_boolean_assignment(FILE *f, egraph_t *egraph) {
+  print_boolean_assignment(f, egraph_backend(egraph));
 }
 
 

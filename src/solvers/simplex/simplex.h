@@ -30,14 +30,13 @@
 
 /*
  * Initialize a simplex solver
- * - core = the attached smt-core object
- * - gates = the gate manager for core
- * - egraph = the attached egraph (or NULL)
+ * - gates = the gate manager used for Boolean gate construction
+ * - egraph = the attached egraph kernel
  *
  * Default settings:
  * - no row saving, no jump buffer (exceptions cause abort)
  */
-extern void init_simplex_solver(simplex_solver_t *solver, smt_core_t *core,
+extern void init_simplex_solver(simplex_solver_t *solver,
                                 gate_manager_t *gates, egraph_t *egraph);
 
 

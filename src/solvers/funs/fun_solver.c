@@ -799,7 +799,7 @@ static void fun_solver_update_axiom1(fun_solver_t *solver, eterm_t t, composite_
     egraph_assert_eq_axiom(egraph, pos_occ(a), composite_child(u, n+1));
   } else {
     eq = egraph_make_eq(egraph, pos_occ(a), composite_child(u, n+1));
-    add_unit_clause(solver->core, eq);
+    egraph_add_unit_clause(solver->egraph, eq);
   }
 
   // cleanup
@@ -1090,7 +1090,7 @@ static void fun_solver_extensionality_axiom(fun_solver_t *solver, thvar_t x, thv
   printf(")\n\n");
 #endif
 
-  add_binary_clause(solver->core, not(l1), l2);
+  egraph_add_binary_clause(solver->egraph, not(l1), l2);
 
   ivector_reset(v);
 
@@ -1613,7 +1613,7 @@ static void fun_solver_add_axiom2(fun_solver_t *solver, thvar_t x, thvar_t z, co
   printf("\n\n");
 #endif
 
-  add_clause(solver->core, lemma->size, lemma->data);
+  egraph_add_clause(solver->egraph, lemma->size, lemma->data);
 
 #if TRACE
   printf("clause:\n  (OR");
@@ -1814,9 +1814,9 @@ static bool update_conflicts(fun_solver_t *solver) {
  done:
   if (num_updates > 0) {
     if (num_updates == 1) {
-      trace_printf(solver->core->trace, 5, "(array solver: 1 update lemma)\n");
+      trace_printf(egraph_trace(solver->egraph), 5, "(array solver: 1 update lemma)\n");
     } else {
-      trace_printf(solver->core->trace, 5, "(array solver: %"PRIu32" update lemmas)\n", num_updates);
+      trace_printf(egraph_trace(solver->egraph), 5, "(array solver: %"PRIu32" update lemmas)\n", num_updates);
     }
 #if TRACE
     printf("---> ARRAY SOLVER: update axioms in %"PRIu32" classes out of %"PRIu32"\n", num_updates, n);
@@ -1843,15 +1843,12 @@ static bool update_conflicts(fun_solver_t *solver) {
 
 /*
  * Initialization
- * - core = attached smt_core
- * - gates = gate manager for the core
+ * - gates = gate manager for Boolean gate construction
  * - egraph = attached egraph
  * - ttbl = attached type table
  */
-void init_fun_solver(fun_solver_t *solver, smt_core_t *core,
+void init_fun_solver(fun_solver_t *solver,
                      gate_manager_t *gates, egraph_t *egraph, type_table_t *ttbl) {
-
-  solver->core = core;
   solver->gate_manager = gates;
   solver->egraph = egraph;
   solver->types = ttbl;
@@ -3153,7 +3150,7 @@ static void fun_solver_gen_interface_lemma(fun_solver_t *solver, literal_t l, th
   printf(")\n\n");
 #endif
 
-  add_binary_clause(solver->core, not(l), not(eq));
+  egraph_add_binary_clause(solver->egraph, not(l), not(eq));
 
   ivector_reset(v);
 
@@ -3731,5 +3728,3 @@ th_egraph_interface_t *fun_solver_egraph_interface(fun_solver_t *solver) {
 fun_egraph_interface_t *fun_solver_fun_egraph_interface(fun_solver_t *solver) {
   return &fsolver_fun_egraph;
 }
-
-

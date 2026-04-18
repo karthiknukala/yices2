@@ -718,7 +718,7 @@ static void ematch_add_quant_cnstr(quant_solver_t *solver, uint32_t cidx, term_t
   printf("(BEGIN): decision level = %d (base level = %d)\n", solver->decision_level, solver->base_level);
 #endif
 
-  lemma_cost = add_all_quant_lemmas(solver->core, cnstr->enable_lit, units);
+  lemma_cost = egraph_add_quant_lemmas(solver->egraph, cnstr->enable_lit, units);
   if (lemma_cost > 0) {
     cnstr_learner_update_lemma_reward(&solver->cnstr_learner, lemma_cost, cidx);
   }
@@ -731,14 +731,14 @@ static void ematch_add_quant_cnstr(quant_solver_t *solver, uint32_t cidx, term_t
   for(i=0; i<n; i++) {
     l = units->data[i];
     if (solver->decision_level == solver->base_level) {
-      switch(literal_base_value(solver->core, l)) {
+      switch(egraph_literal_base_value(solver->egraph, l)) {
       case VAL_FALSE:
-        record_unit_theory_conflict(solver->core, l);
+        egraph_record_unit_conflict(solver->egraph, l);
         break;
       case VAL_TRUE:
         break;
       default:
-        implied_literal(solver->core, l, mk_literal_antecedent(cnstr->enable_lit));
+        egraph_implied_literal(solver->egraph, l, mk_literal_antecedent(cnstr->enable_lit));
       }
     } else {
 #if TRACE
@@ -802,7 +802,7 @@ static void ematch_process_cnstr(quant_solver_t *solver, uint32_t cidx) {
       n = matches->size;
 
       for (i=0; i<n; i++) {
-        status = smt_status(solver->core);
+        status = egraph_status(solver->egraph);
         if (status != YICES_STATUS_SEARCHING) {
 #if TRACE
           printf("\nSMT status: %d\n", status);
@@ -1005,7 +1005,7 @@ static void ematch_process_all_cnstr(quant_solver_t *solver) {
   n = solver->round_cnstrs.size;
   assert(n == solver->round_instances.size);
   for(i=0; i<n; i++) {
-    status = smt_status(solver->core);
+    status = egraph_status(solver->egraph);
     if (status != YICES_STATUS_SEARCHING) {
 #if TRACE
       printf("\nSMT status: %d\n", status);
@@ -1042,15 +1042,12 @@ static void ematch_process_all_cnstr(quant_solver_t *solver) {
 
 /*
  * Initialization
- * - core = attached smt_core
- * - gates = gate manager for the core
+ * - gates = gate manager for Boolean gate construction
  * - egraph = attached egraph
  * - ttbl = attached type table
  */
-void init_quant_solver(quant_solver_t *solver, smt_core_t *core,
+void init_quant_solver(quant_solver_t *solver,
                      gate_manager_t *gates, egraph_t *egraph, type_table_t *ttbl) {
-
-  solver->core = core;
   solver->gate_manager = gates;
   solver->egraph = egraph;
   solver->types = ttbl;
@@ -1218,12 +1215,12 @@ bool quant_solver_propagate(quant_solver_t *solver) {
   uint32_t i, n;
   ivector_t *lits, *ants;
   literal_t l;
-  smt_core_t *s;
+  egraph_t *egraph;
 
   result = true;
   lits = &solver->base_literals;
   ants = &solver->base_antecedents;
-  s = solver->core;
+  egraph = solver->egraph;
 
   n = lits->size;
   assert(ants->size == n);
@@ -1242,16 +1239,16 @@ bool quant_solver_propagate(quant_solver_t *solver) {
       printf("\n");
 #endif
 
-      switch(literal_value(s, l)) {
+      switch(egraph_literal_value(egraph, l)) {
       case VAL_FALSE:
-        record_unit_theory_conflict(s, l);
+        egraph_record_unit_conflict(egraph, l);
         result = false;
         break;
       case VAL_TRUE:
         break; // true clause
       case VAL_UNDEF_FALSE:
       case VAL_UNDEF_TRUE:
-        implied_literal(s, l, mk_literal_antecedent(ants->data[i]));
+        egraph_implied_literal(egraph, l, mk_literal_antecedent(ants->data[i]));
         break;
       }
     }
@@ -1319,16 +1316,16 @@ fcheck_code_t quant_solver_final_check(quant_solver_t *solver) {
 //  print_context_intern_mapping(stdout, solver->em.ctx);
 
   printf("\n(BEGIN) Binary clauses:\n");
-  print_binary_clauses(stdout, solver->core);
+  egraph_print_binary_clauses(stdout, solver->egraph);
 
   printf("\n(BEGIN) Problem clauses:\n");
-  print_problem_clauses(stdout, solver->core);
+  egraph_print_problem_clauses(stdout, solver->egraph);
 
   printf("\n(BEGIN) Learnt clauses:\n");
-  print_learned_clauses(stdout, solver->core);
+  egraph_print_learned_clauses(stdout, solver->egraph);
 
   printf("\n(BEGIN) Lemmas:\n");
-  print_lemmas(stdout, solver->core);
+  egraph_print_lemmas(stdout, solver->egraph);
 #endif
 
 //  if (solver->stats.num_rounds_per_search == 8) {
@@ -1350,16 +1347,16 @@ fcheck_code_t quant_solver_final_check(quant_solver_t *solver) {
 //  print_context_intern_mapping(stdout, solver->em.ctx);
 //
   printf("\n(END) Binary clauses:\n");
-  print_binary_clauses(stdout, solver->core);
+  egraph_print_binary_clauses(stdout, solver->egraph);
 
   printf("\n(END) Problem clauses:\n");
-  print_problem_clauses(stdout, solver->core);
+  egraph_print_problem_clauses(stdout, solver->egraph);
 
   printf("\n(END) Learnt clauses:\n");
-  print_learned_clauses(stdout, solver->core);
+  egraph_print_learned_clauses(stdout, solver->egraph);
 
   printf("\n(END) Lemmas:\n");
-  print_lemmas(stdout, solver->core);
+  egraph_print_lemmas(stdout, solver->egraph);
 #endif
 
 #if EM_VERBOSE
@@ -1485,4 +1482,3 @@ th_egraph_interface_t *quant_solver_egraph_interface(quant_solver_t *solver) {
 quant_egraph_interface_t *quant_solver_quant_egraph_interface(quant_solver_t *solver) {
   return &fsolver_quant_egraph;
 }
-

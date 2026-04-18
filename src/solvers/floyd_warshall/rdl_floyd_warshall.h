@@ -77,7 +77,7 @@
 #include <setjmp.h>
 
 #include "context/context_types.h"
-#include "solvers/cdcl/smt_core.h"
+#include "solvers/egraph/egraph.h"
 #include "solvers/floyd_warshall/dl_vartable.h"
 #include "terms/poly_buffer.h"
 #include "terms/rationals.h"
@@ -378,9 +378,9 @@ typedef struct rdl_trail_stack_s {
 
 typedef struct rdl_solver_s {
   /*
-   * Attached smt core and gate manager
+   * Attached egraph kernel and gate manager
    */
-  smt_core_t *core;
+  egraph_t *egraph;
   gate_manager_t *gate_manager;
 
   /*
@@ -477,10 +477,10 @@ typedef struct rdl_solver_s {
 
 /*
  * Initialize an rdl solver
- * - core = the attached smt-core object
+ * - egraph = the attached egraph kernel
  * - gates = the attached gate manager
  */
-extern void init_rdl_solver(rdl_solver_t *solver, smt_core_t *core, gate_manager_t *gates);
+extern void init_rdl_solver(rdl_solver_t *solver, egraph_t *egraph, gate_manager_t *gates);
 
 
 /*

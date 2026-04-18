@@ -31,7 +31,7 @@ void create_quant_solver(context_t *ctx) {
   assert(ctx->egraph != NULL && ctx->quant_solver == NULL);
 
   solver = (quant_solver_t *) safe_malloc(sizeof(quant_solver_t));
-  init_quant_solver(solver, ctx->core, &ctx->gate_manager, ctx->egraph, ctx->types);
+  init_quant_solver(solver, &ctx->gate_manager, ctx->egraph, ctx->types);
   egraph_attach_quantsolver(ctx->egraph, solver, quant_solver_ctrl_interface(solver),
                           quant_solver_egraph_interface(solver),
                           quant_solver_quant_egraph_interface(solver));
@@ -47,5 +47,4 @@ void context_attach_quant_prob(context_t *ctx, ef_prob_t *prob) {
 
   quant_solver_attach_prob(ctx->quant_solver, prob, ctx);
 }
-
 

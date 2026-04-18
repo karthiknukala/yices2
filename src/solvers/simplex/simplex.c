@@ -1569,12 +1569,10 @@ static void simplex_create_constant(simplex_solver_t *solver) {
 
 /*
  * Initialize a simplex solver
- * - core = attached smt_core
  * - gates = attached gate manager
- * - egraph = attached egraph (or NULL)
+ * - egraph = attached egraph kernel
  */
-void init_simplex_solver(simplex_solver_t *solver, smt_core_t *core, gate_manager_t *gates, egraph_t *egraph) {
-  solver->core = core;
+void init_simplex_solver(simplex_solver_t *solver, gate_manager_t *gates, egraph_t *egraph) {
   solver->gate_manager = gates;
   solver->egraph = egraph;
   solver->base_level = 0;
@@ -1602,7 +1600,7 @@ void init_simplex_solver(simplex_solver_t *solver, smt_core_t *core, gate_manage
 
   init_simplex_statistics(&solver->stats);
 
-  init_arith_atomtable(&solver->atbl, core);
+  init_arith_atomtable(&solver->atbl, egraph);
   init_arith_vartable(&solver->vtbl);
 
   solver->propagator = NULL; // allocated if needed in start search
@@ -1761,25 +1759,25 @@ static void create_binary_lemma(simplex_solver_t *solver, arith_atom_t *atom1, a
   case GE_ATM:
     assert(tag_of_atom(atom2) == GE_ATM);
     if (q_ge(a, b)) {
-      add_binary_clause(solver->core, not(l1), l2);  // (x >= a) ==> (x >= b)
+      egraph_add_binary_clause(solver->egraph, not(l1), l2);  // (x >= a) ==> (x >= b)
     } else {
-      add_binary_clause(solver->core, l1, not(l2));  // (x < a) ==> (x < b)
+      egraph_add_binary_clause(solver->egraph, l1, not(l2));  // (x < a) ==> (x < b)
     }
     break;
 
   case LE_ATM:
     if (tag_of_atom(atom2) == GE_ATM) {
       if (q_lt(a, b)) {
-        add_binary_clause(solver->core, not(l1), not(l2));  // (x > a) or (x > b)
+        egraph_add_binary_clause(solver->egraph, not(l1), not(l2));  // (x > a) or (x > b)
       } else {
-        add_binary_clause(solver->core, l1, l2);   // (x <= a) or (x >= b)
+        egraph_add_binary_clause(solver->egraph, l1, l2);   // (x <= a) or (x >= b)
       }
     } else {
       assert(tag_of_atom(atom2) == LE_ATM);
       if (q_le(a, b)) {
-        add_binary_clause(solver->core, not(l1), l2);  // (x <= a) ==> (x <= b)
+        egraph_add_binary_clause(solver->egraph, not(l1), l2);  // (x <= a) ==> (x <= b)
       } else {
-        add_binary_clause(solver->core, l1, not(l2));  // (x > a) ==> (x > b))
+        egraph_add_binary_clause(solver->egraph, l1, not(l2));  // (x > a) ==> (x > b))
       }
     }
     break;
@@ -1788,20 +1786,20 @@ static void create_binary_lemma(simplex_solver_t *solver, arith_atom_t *atom1, a
     switch (tag_of_atom(atom2)) {
     case GE_ATM:
       if (q_ge(a, b)) {
-        add_binary_clause(solver->core, not(l1), l2); // (x == a) ==> (x >= b))
+        egraph_add_binary_clause(solver->egraph, not(l1), l2); // (x == a) ==> (x >= b))
       } else {
-        add_binary_clause(solver->core, not(l1), not(l2));  // (x == a) ==> (x < b)
+        egraph_add_binary_clause(solver->egraph, not(l1), not(l2));  // (x == a) ==> (x < b)
       }
       break;
     case LE_ATM:
       if (q_le(a, b)) {
-        add_binary_clause(solver->core, not(l1), l2);   // (x == a) ==> (x <= b)
+        egraph_add_binary_clause(solver->egraph, not(l1), l2);   // (x == a) ==> (x <= b)
       } else {
-        add_binary_clause(solver->core, not(l1), not(l2)); // (x == a) ==> (x > b);
+        egraph_add_binary_clause(solver->egraph, not(l1), not(l2)); // (x == a) ==> (x > b);
       }
       break;
     case EQ_ATM:
-      add_binary_clause(solver->core, not(l1), not(l2)); // (not (x == a)) or (not (x == b))
+      egraph_add_binary_clause(solver->egraph, not(l1), not(l2)); // (not (x == a)) or (not (x == b))
       break;
     }
   }
@@ -2595,7 +2593,7 @@ static void add_eq_or_diseq_axiom(simplex_solver_t *solver, bool tt) {
     l = simplify_eq_atom(solver, &l1, &l2);
     if (l == null_literal) {
       // l1 is (p >= 0), l2 is (p <= 0): assert (or (not l1) (not l2))
-      add_binary_clause(solver->core, not(l1), not(l2));
+      egraph_add_binary_clause(solver->egraph, not(l1), not(l2));
 
 #if TRACE
       printf("---> adding clause: ");
@@ -3186,14 +3184,14 @@ void simplex_assert_cond_vareq_axiom(simplex_solver_t *solver, literal_t c, thva
   if (l == null_literal) {
     // l1 is (p >= 0) and l2 is (p <= 0)
     // assert (c ==> l1) and (c ==> l2)
-    add_binary_clause(solver->core, not(c), l1);
-    add_binary_clause(solver->core, not(c), l2);
+    egraph_add_binary_clause(solver->egraph, not(c), l1);
+    egraph_add_binary_clause(solver->egraph, not(c), l2);
   } else {
     assert(l == false_literal || l == true_literal);
     // if p == 0 is true, nothing to do
     // if p == 0 is false, assert (not c)
     if (l == false_literal) {
-      add_unit_clause(solver->core, not(c));
+      egraph_add_unit_clause(solver->egraph, not(c));
     }
   }
 }
@@ -3229,10 +3227,10 @@ void simplex_assert_clause_vareq_axiom(simplex_solver_t *solver, uint32_t n, lit
 
     assert(v->size == n);
     ivector_push(v, l1);
-    add_clause(solver->core, n+1, v->data);
+    egraph_add_clause(solver->egraph, n+1, v->data);
 
     v->data[n] = l2;
-    add_clause(solver->core, n+1, v->data);
+    egraph_add_clause(solver->egraph, n+1, v->data);
 
     ivector_reset(v);
 
@@ -3241,7 +3239,7 @@ void simplex_assert_clause_vareq_axiom(simplex_solver_t *solver, uint32_t n, lit
     // if p == 0 is true, nothing to do
     // if p == 0 is false, assert (c[0] \/ ... \/ c[n-1])
     if (l == false_literal) {
-      add_clause(solver->core, n, c);
+      egraph_add_clause(solver->egraph, n, c);
     }
   }
 }
@@ -3407,7 +3405,7 @@ static void simplex_init_tableau(simplex_solver_t *solver) {
   solver->tableau_ready = true;
   solver->matrix_ready = false;
 
-  trace_printf(solver->core->trace, 12, "(initial tableau: %"PRIu32" rows, %"PRIu32" variables, %"PRIu32" atoms)\n",
+  trace_printf(egraph_trace(solver->egraph), 12, "(initial tableau: %"PRIu32" rows, %"PRIu32" variables, %"PRIu32" atoms)\n",
 	       solver->stats.num_rows, solver->vtbl.nvars, solver->atbl.natoms);
 
 #if TRACE
@@ -4256,10 +4254,10 @@ static bool simplex_check_feasibility(simplex_solver_t *solver) {
       break;
     }
 
-    if (tracing(solver->core->trace, 15)) {
+    if (tracing(egraph_trace(solver->egraph), 15)) {
       loops ++;
       if ((loops & 0xFFF) == 0) {
-	trace_puts(solver->core->trace, 15, ".");
+	trace_puts(egraph_trace(solver->egraph), 15, ".");
       }
     }
 
@@ -4326,7 +4324,7 @@ static bool simplex_check_feasibility(simplex_solver_t *solver) {
         if (repeats > bthreshold) {
           solver->use_blands_rule = true;
           solver->stats.num_blands ++;
-	  trace_printf(solver->core->trace, 15, "(activating bland's rule: %"PRIu32")\n", solver->stats.num_blands);
+	  trace_printf(egraph_trace(solver->egraph), 15, "(activating bland's rule: %"PRIu32")\n", solver->stats.num_blands);
         }
       }
     }
@@ -4340,9 +4338,9 @@ static bool simplex_check_feasibility(simplex_solver_t *solver) {
   }
   ivector_reset(leaving_vars);
 
-  if (tracing(solver->core->trace, 15)) {
+  if (tracing(egraph_trace(solver->egraph), 15)) {
     if (loops > 0xFFF || solver->use_blands_rule) {
-      trace_newline(solver->core->trace, 15);
+      trace_newline(egraph_trace(solver->egraph), 15);
     }
   }
 
@@ -4526,7 +4524,7 @@ static void simplex_build_conflict_clause(simplex_solver_t *solver, ivector_t *v
   printf("\n");
   for (i=0; i<n; i++) {
     l = v->data[i];
-    atom = bvar_atom(solver->core, var_of(l));
+    atom = egraph_bvar_atom(solver->egraph, var_of(l));
     if (atom != NULL) {
       printf("    ");
       print_literal(stdout, l);
@@ -4567,7 +4565,7 @@ static void simplex_report_conflict(simplex_solver_t *solver) {
 #endif
   // record expl_vector as a conflict (first add the null-literal terminator)
   ivector_push(v, null_literal);
-  record_theory_conflict(solver->core, v->data);
+  egraph_record_conflict(solver->egraph, v->data);
 
   solver->stats.num_conflicts ++;
 }
@@ -4798,7 +4796,7 @@ static void record_simple_conflict(simplex_solver_t *solver, int32_t k, literal_
 #endif
   // add the end marker
   ivector_push(v, null_literal);
-  record_theory_conflict(solver->core, v->data);
+  egraph_record_conflict(solver->egraph, v->data);
 
   solver->stats.num_conflicts ++;
 }
@@ -5081,10 +5079,10 @@ static void simplex_implied_literal(simplex_solver_t *solver, int32_t atm, int32
    * Otherwise, propagate l with i as antecedent
    */
   if (solver->base_level == solver->decision_level) {
-    add_unit_clause(solver->core, l);
+    egraph_add_unit_clause(solver->egraph, l);
   } else {
     expl = make_simplex_prop_object(solver, i);
-    propagate_literal(solver->core, l, expl);
+    egraph_propagate_literal(solver->egraph, l, expl);
     solver->stats.num_props ++;
   }
 
@@ -5296,7 +5294,7 @@ static void record_derived_conflict(simplex_solver_t *solver, int32_t j, ivector
 
   convert_expl_to_clause(v);
   ivector_push(v, null_literal);
-  record_theory_conflict(solver->core, v->data);
+  egraph_record_conflict(solver->egraph, v->data);
 
   solver->stats.num_conflicts ++;
 }
@@ -7054,7 +7052,7 @@ static bool simplex_try_naive_integer_search(simplex_solver_t *solver) {
 
 #if 0
   printf("\nNAIVE INTEGER SEARCH %"PRIu32" [dlevel = %"PRIu32", decisions = %"PRIu64"]\n\n",
-	 solver->stats.num_make_intfeasible, solver->core->decision_level, solver->core->stats.decisions);
+	 solver->stats.num_make_intfeasible, egraph_decision_level(solver->egraph), egraph_num_decisions(solver->egraph));
   print_simplex_matrix(stdout, solver);
   print_simplex_bounds(stdout, solver);
   printf("\n");
@@ -7527,7 +7525,7 @@ static void build_gcd_conflict(simplex_solver_t *solver, row_t *row) {
   ivector_push(v, null_literal);
 
   // record v as a conflict
-  record_theory_conflict(solver->core, v->data);
+  egraph_record_conflict(solver->egraph, v->data);
 
   solver->stats.num_dioph_gcd_conflicts ++;
 }
@@ -7558,7 +7556,7 @@ static void build_dsolver_conflict(simplex_solver_t *solver, ivector_t *v) {
   convert_expl_to_clause(w);
   ivector_push(w, null_literal);
 
-  record_theory_conflict(solver->core, w->data);
+  egraph_record_conflict(solver->egraph, w->data);
 
   solver->stats.num_dioph_conflicts ++;
 }
@@ -7997,7 +7995,7 @@ static void build_integrality_conflict(simplex_solver_t *solver, thvar_t *a, uin
   ivector_push(v, null_literal);
 
   // record v as a conflict
-  record_theory_conflict(solver->core, v->data);
+  egraph_record_conflict(solver->egraph, v->data);
 }
 
 
@@ -8377,7 +8375,7 @@ static bool process_integrality_constraint(simplex_solver_t *solver, int_constra
   feasible = int_constraint_is_feasible(checker, &v);
   if (!feasible) {
     build_integrality_conflict(solver, v.data, v.size);
-    trace_printf(solver->core->trace, 10, "(unsat by integrality test)\n");
+    trace_printf(egraph_trace(solver->egraph), 10, "(unsat by integrality test)\n");
     solver->stats.num_itest_conflicts ++;
 
   } else {
@@ -8397,7 +8395,7 @@ static bool process_integrality_constraint(simplex_solver_t *solver, int_constra
 	feasible = simplex_integer_derived_bounds(solver, x, p, q, &v);
 	if (!feasible) {
 	  solver->stats.num_itest_bound_conflicts ++;
-	  trace_printf(solver->core->trace, 10, "(unsat by integer bound strengthening)\n");
+	  trace_printf(egraph_trace(solver->egraph), 10, "(unsat by integer bound strengthening)\n");
 	  goto done;
 	}
       }
@@ -8730,7 +8728,7 @@ static void add_gomory_cut(simplex_solver_t *solver, gomory_vector_t *g) {
 
   ivector_push(v, cut);
 
-  add_clause(solver->core, v->size, v->data);
+  egraph_add_clause(solver->egraph, v->size, v->data);
 
 #if TRACE
   printf("---> cut atom:\n");
@@ -8933,18 +8931,18 @@ static bool intfeas_wrapper(simplex_solver_t *solver, const char *name, bool (*f
   nbounds = solver->bstack.top;
   solver->recheck = false;
   if (! f(solver)) {
-    trace_printf(solver->core->trace, 10, "(unsat by %s)\n", name);
+    trace_printf(egraph_trace(solver->egraph), 10, "(unsat by %s)\n", name);
     solver->stats.num_bound_conflicts ++;
     return false;
   } else {
-    trace_printf(solver->core->trace, 10, "(%s: %"PRIu32" new bounds)\n", name, solver->bstack.top - nbounds);
+    trace_printf(egraph_trace(solver->egraph), 10, "(%s: %"PRIu32" new bounds)\n", name, solver->bstack.top - nbounds);
     if (solver->recheck) {
       /*
        * Strengthened bounds require rechecking feasibility
        */
       simplex_fix_nonbasic_assignment(solver);
       if (! simplex_make_feasible(solver) ) {
-	trace_printf(solver->core->trace, 10, "(infeasible after bound strengthening)\n");
+	trace_printf(egraph_trace(solver->egraph), 10, "(infeasible after bound strengthening)\n");
 	solver->stats.num_bound_recheck_conflicts ++;
 	return false;
       }
@@ -9009,7 +9007,7 @@ static bool simplex_make_integer_feasible(simplex_solver_t *solver) {
 
 #if TRACE_BB
   printf("\n--- make integer feasible [dlevel = %"PRIu32", decisions = %"PRIu64"]: %"PRId32
-         " integer-invalid vars\n", solver->core->decision_level, solver->core->stats.decisions,
+         " integer-invalid vars\n", egraph_decision_level(solver->egraph), egraph_num_decisions(solver->egraph),
          simplex_num_integer_invalid_vars(solver));
 #endif
 
@@ -9024,11 +9022,11 @@ static bool simplex_make_integer_feasible(simplex_solver_t *solver) {
 
   solver->stats.num_make_intfeasible ++;
 
-  trace_printf(solver->core->trace, 10, "(testing integer feasibility)\n");
+  trace_printf(egraph_trace(solver->egraph), 10, "(testing integer feasibility)\n");
 
 #if TRACE_INTFEAS
   printf("\nMAKE INTEGER FEASIBLE %"PRIu32" [dlevel = %"PRIu32", decisions = %"PRIu64"]\n\n",
-	 solver->stats.num_make_intfeasible, solver->core->decision_level, solver->core->stats.decisions);
+	 solver->stats.num_make_intfeasible, egraph_decision_level(solver->egraph), egraph_num_decisions(solver->egraph));
   print_simplex_vars(stdout, solver);
   printf("\n");
   print_simplex_matrix(stdout, solver);
@@ -9055,7 +9053,7 @@ static bool simplex_make_integer_feasible(simplex_solver_t *solver) {
    */
   if (underconstrained(solver)) {
     if (simplex_try_naive_integer_search(solver)) {
-      trace_printf(solver->core->trace, 10, "(feasible by naive search)\n");
+      trace_printf(egraph_trace(solver->egraph), 10, "(feasible by naive search)\n");
       solver->bstack.prop_ptr = solver->bstack.fix_ptr;
       return true;
     }
@@ -9093,7 +9091,7 @@ static bool simplex_make_integer_feasible(simplex_solver_t *solver) {
 
 #if TRACE_INTFEAS
   printf("\nMAKE INTEGER FEASIBLE %"PRIu32" [dlevel = %"PRIu32", decisions = %"PRIu64"]\n\n",
-	 solver->stats.num_make_intfeasible, solver->core->decision_level, solver->core->stats.decisions);
+	 solver->stats.num_make_intfeasible, egraph_decision_level(solver->egraph), egraph_num_decisions(solver->egraph));
   printf("BRANCHING REQUIRED\n");
   print_simplex_vars(stdout, solver);
   printf("\n");
@@ -9109,7 +9107,7 @@ static bool simplex_make_integer_feasible(simplex_solver_t *solver) {
    * Create a branch atom or create Gomory cuts
    */
   x = select_branch_variable(solver, v, &bb_score);
-  trace_printf(solver->core->trace, 3,
+  trace_printf(egraph_trace(solver->egraph), 3,
 	       "(branch & bound: %"PRIu32" candidates, branch variable = i!%"PRId32", score = %"PRIu32")\n",
 	       v->size, x, bb_score);
 
@@ -9117,24 +9115,24 @@ static bool simplex_make_integer_feasible(simplex_solver_t *solver) {
     if (false && v->size > 1 && bb_score > 200000000 && solver->stats.num_gomory_cuts < 100) {
       n = try_gomory_cuts(solver, v, 100);
       solver->stats.num_gomory_cuts += n;
-      trace_printf(solver->core->trace, 3, "(Gomory cuts: %"PRIu32" cuts created)\n", n);
+      trace_printf(egraph_trace(solver->egraph), 3, "(Gomory cuts: %"PRIu32" cuts created)\n", n);
       if (n > 0) goto done;
-      solver->core->stats.conflicts += 1000;
+      egraph_bump_conflicts(solver->egraph, 1000);
     } else if (bb_score > 100000000) {
       n = gomory_cut_for_var(solver, x);
       solver->stats.num_gomory_cuts ++;
       if (n > 0) {
-	trace_printf(solver->core->trace, 3, "(Created Gomory cut on var i!%"PRId32")\n", x);
+	trace_printf(egraph_trace(solver->egraph), 3, "(Created Gomory cut on var i!%"PRId32")\n", x);
       } else {
-	trace_printf(solver->core->trace, 3, "(Failed to create Gomory cut on var i!%"PRId32")\n", x);
+	trace_printf(egraph_trace(solver->egraph), 3, "(Failed to create Gomory cut on var i!%"PRId32")\n", x);
       }
       if (n > 0) goto done;
-      //      solver->core->stats.conflicts += 1000;
+      //      solver->egraph->stats.conflicts += 1000;
     }
   }
 
   create_branch_atom(solver, x);
-  solver->core->stats.conflicts += 40;
+  egraph_bump_conflicts(solver->egraph, 40);
 
 #if TRACE_INTFEAS
   print_branch_candidates(stdout, solver, v);
@@ -9189,7 +9187,7 @@ static void record_egraph_eq_conflict(simplex_solver_t *solver, int32_t k, thvar
   printf("\n---> SIMPLEX CONFLICT on g!%"PRId32" == g!%"PRId32" (conflict with bound)\n",
 	 arith_var_eterm(&solver->vtbl, x1), arith_var_eterm(&solver->vtbl, x2));
 #endif
-  record_theory_conflict(solver->core, v->data);
+  egraph_record_conflict(solver->egraph, v->data);
 
   solver->stats.num_conflicts ++;
 }
@@ -9216,7 +9214,7 @@ static bool simplex_process_var_eq(simplex_solver_t *solver, thvar_t x1, thvar_t
   print_simplex_var(stdout, solver, x1);
   printf(" = ");
   print_simplex_var(stdout, solver, x2);
-  printf(" [dlevel = %"PRIu32"]\n", solver->core->decision_level);
+  printf(" [dlevel = %"PRIu32"]\n", egraph_decision_level(solver->egraph));
   if (!arith_var_is_free(&solver->vtbl, x1)) {
     printf("     ");
     print_simplex_vardef(stdout, solver, x1);
@@ -9456,7 +9454,7 @@ static uint32_t simplex_trichotomy_lemma(simplex_solver_t *solver, thvar_t x1, t
     print_egraph_atom_of_literal(stdout, solver->egraph, not(l));
     printf("\n");
 #endif
-    add_unit_clause(solver->core, not(l));
+    egraph_add_unit_clause(solver->egraph, not(l));
     reset_poly_buffer(&solver->buffer);
 
 #if 0
@@ -9520,7 +9518,7 @@ static uint32_t simplex_trichotomy_lemma(simplex_solver_t *solver, thvar_t x1, t
     printf(")\n");
 #endif
 
-    add_ternary_clause(solver->core, l, l1, l2);
+    egraph_add_ternary_clause(solver->egraph, l, l1, l2);
 
     /*
      * The following two clauses encode
@@ -9528,8 +9526,8 @@ static uint32_t simplex_trichotomy_lemma(simplex_solver_t *solver, thvar_t x1, t
      *   (t1 = t2) => (x1 - x2) >= 0
      * They are redundant but adding them improves performance.
      */
-    add_binary_clause(solver->core, not(l), not(l1));
-    add_binary_clause(solver->core, not(l), not(l2));
+    egraph_add_binary_clause(solver->egraph, not(l), not(l1));
+    egraph_add_binary_clause(solver->egraph, not(l), not(l2));
 
     solver->stats.num_tricho_lemmas ++;
 #if 0
@@ -9559,7 +9557,7 @@ static void simplex_process_var_diseq(simplex_solver_t *solver, thvar_t x1, thva
   print_simplex_var(stdout, solver, x1);
   printf(" != ");
   print_simplex_var(stdout, solver, x2);
-  printf(" [dlevel = %"PRIu32", decisions = %"PRIu64"]\n", solver->core->decision_level, solver->core->stats.decisions);
+  printf(" [dlevel = %"PRIu32", decisions = %"PRIu64"]\n", egraph_decision_level(solver->egraph), egraph_num_decisions(solver->egraph));
   if (! arith_var_is_free(&solver->vtbl, x1)) {
     printf("     ");
     print_simplex_vardef(stdout, solver, x1);
@@ -9700,7 +9698,7 @@ static bool simplex_process_egraph_base_assertions(simplex_solver_t *solver) {
 	simplex_assert_vareq_axiom(solver, a->var[0], a->var[1], true);
 	if (solver->unsat_before_search) {
 	  // record the conflict in core
-	  record_empty_theory_conflict(solver->core);
+	  egraph_record_empty_conflict(solver->egraph);
 	  reset_eassertion_queue(&solver->egraph_queue);
 	  return false;
 	}
@@ -9797,7 +9795,7 @@ void simplex_start_search(simplex_solver_t *solver) {
   simplex_set_initial_stats(solver);
 
   if (solver->unsat_before_search) {
-    record_empty_theory_conflict(solver->core);
+    egraph_record_empty_conflict(solver->egraph);
     solver->stats.num_conflicts ++;
     goto done;
   }
@@ -9822,7 +9820,7 @@ void simplex_start_search(simplex_solver_t *solver) {
   // set bounds for all fixed variables
   simplex_check_fixed_vars(solver);
   if (solver->unsat_before_search) {
-    record_empty_theory_conflict(solver->core);
+    egraph_record_empty_conflict(solver->egraph);
     solver->stats.num_conflicts ++;
     goto done;
   }
@@ -9932,7 +9930,7 @@ bool simplex_propagate(simplex_solver_t *solver) {
     // start search has not been called yet
     assert(solver->decision_level == solver->base_level);
     if (solver->unsat_before_search) {
-      record_empty_theory_conflict(solver->core);
+      egraph_record_empty_conflict(solver->egraph);
       feasible = false;
       goto done;
     }
@@ -10105,7 +10103,7 @@ fcheck_code_t simplex_final_check(simplex_solver_t *solver) {
 
 #if TRACE
   printf("---> SIMPLEX FINAL CHECK [dlevel = %"PRIu32", decisions = %"PRIu64"]\n",
-         solver->decision_level, solver->core->stats.decisions);
+         solver->decision_level, egraph_num_decisions(solver->egraph));
   fflush(stdout);
 #endif
 
@@ -11899,7 +11897,7 @@ static void simplex_gen_interface_lemma(simplex_solver_t *solver, literal_t l, t
     /*
      * x1 = x2 is false: add (not l) as an axiom for the egraph
      */
-    add_unit_clause(solver->core, not(l));
+    egraph_add_unit_clause(solver->egraph, not(l));
     solver->stats.num_reduced_inter_lemmas ++;
 
 #if 0
@@ -11948,10 +11946,10 @@ static void simplex_gen_interface_lemma(simplex_solver_t *solver, literal_t l, t
     l1 = create_pos_atom(solver, y, c); // l1 is (y > c)
     l2 = create_neg_atom(solver, y, c); // l2 is (y < c)
 
-    add_ternary_clause(solver->core, not(l), l1, l2); // clause: (not l) or (y > c) or (y < c))
+    egraph_add_ternary_clause(solver->egraph, not(l), l1, l2); // clause: (not l) or (y > c) or (y < c))
     if (equiv) {
-      add_binary_clause(solver->core, l, not(l1)); // y > c => t1 /= t2
-      add_binary_clause(solver->core, l, not(l2)); // y < c => t1 /= t2
+      egraph_add_binary_clause(solver->egraph, l, not(l1)); // y > c => t1 /= t2
+      egraph_add_binary_clause(solver->egraph, l, not(l2)); // y < c => t1 /= t2
     }
 
     solver->stats.num_interface_lemmas ++;
@@ -12453,7 +12451,7 @@ static bool assertions_hold_in_model(simplex_solver_t *solver) {
     x = var_of_atom(atom);
     truth = simplex_eval_atom_in_model(solver->value, atom);
 
-    switch (bvar_value(solver->core, v)) {
+    switch (egraph_bvar_value(solver->egraph, v)) {
     case VAL_FALSE:
       if (truth) {
         printf("---> BUG: invalid Simplex model\n");
@@ -12854,11 +12852,11 @@ static void print_simplex(FILE *f, simplex_solver_t *solver) {
   print_gate_table(f, &solver->gate_manager->htbl);
 }
 
-static void print_core(FILE *f, smt_core_t *core) {
+static void print_core(FILE *f, egraph_t *egraph) {
   fprintf(f, "\n==== Clauses ====\n");
-  print_clauses(f, core);
+  egraph_print_clauses(f, egraph);
   fprintf(f, "\n==== Boolean assignment ====\n");
-  print_boolean_assignment(f, core);
+  egraph_print_boolean_assignment(f, egraph);
 }
 
 static void dump_state(simplex_solver_t *solver) {
@@ -12867,7 +12865,7 @@ static void dump_state(simplex_solver_t *solver) {
   dump = fopen("simplex.dmp", "w");
   if (dump == NULL) return;
   print_simplex(dump, solver);
-  print_core(dump, solver->core);
+  print_core(dump, solver->egraph);
   fclose(dump);
 }
 
@@ -12961,7 +12959,7 @@ static void check_assertion(simplex_solver_t *solver, int32_t a) {
     print_var_value(solver, var_of_atom(atom));
   }
 
-  switch (bvar_value(solver->core, boolvar_of_atom(atom))) {
+  switch (egraph_bvar_value(solver->egraph, boolvar_of_atom(atom))) {
   case VAL_FALSE:
     if (assertion_is_true(a)) {
       printf("---> ERROR: truth assignment mismatch\n");

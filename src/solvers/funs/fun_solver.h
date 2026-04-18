@@ -34,7 +34,6 @@
 #include <assert.h>
 
 #include "context/context_types.h"
-#include "solvers/cdcl/smt_core.h"
 #include "solvers/egraph/diseq_stacks.h"
 #include "solvers/egraph/egraph.h"
 #include "solvers/funs/fun_level.h"
@@ -205,9 +204,8 @@ typedef struct fun_solver_stats_s {
  */
 typedef struct fun_solver_s {
   /*
-   * Attached core + egraph + gate manager + type table
+   * Attached egraph + gate manager + type table
    */
-  smt_core_t *core;
   gate_manager_t *gate_manager;
   egraph_t *egraph;
   type_table_t *types;
@@ -342,12 +340,11 @@ typedef struct fun_solver_s {
 
 /*
  * Initialize the function solver
- * - core = attached smt_core
- * - gates = gate manager for the core
+ * - gates = gate manager for Boolean gate construction
  * - egraph = attached egraph
  * - ttbl = attached type table
  */
-extern void init_fun_solver(fun_solver_t *solver, smt_core_t *core,
+extern void init_fun_solver(fun_solver_t *solver,
                             gate_manager_t *gates, egraph_t *egraph, type_table_t *ttbl);
 
 

@@ -30,6 +30,7 @@
 #include <stdint.h>
 
 #include "api/yices_globals.h"
+#include "api/smt_logic_codes.h"
 #include "context/context.h"
 #include "exists_forall/ef_client.h"
 
@@ -151,10 +152,13 @@ void ef_solve(ef_client_t *efc, uint32_t n, const term_t *assertions, param_t *p
 
   if (efc->efcode == EF_UNINTERPRETED_FUN) {
     // we have uninterpreted functions as existential variables
-    // this is OK if we have an egraph
-    // otherwise we check whether some of these exists variables
+    // this is OK only for EF fragments that actually support UF.
+    // The single-egraph CDCL(T) architecture means several non-UF
+    // fragments also instantiate an egraph backend, so architecture
+    // shape alone is no longer a reliable support check here.
+    // Otherwise we check whether some of these existential variables
     // are skolem functions to give a better error report.
-    if (context_arch_has_egraph(arch)) {
+    if (logic_code == QF_UF) {
       // we can try ematching or mbi
       efc->efcode = EF_NO_ERROR;
     } else if (efc->has_skolem_functions) {
@@ -179,4 +183,3 @@ void ef_solve(ef_client_t *efc, uint32_t n, const term_t *assertions, param_t *p
     }
   }
 }
-

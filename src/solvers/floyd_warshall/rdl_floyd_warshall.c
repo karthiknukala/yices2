@@ -1529,9 +1529,9 @@ static bvar_t bvar_for_atom(rdl_solver_t *solver, int32_t x, int32_t y, rational
   atm = get_rdl_atom(&solver->atoms, id);
   v = atm->boolvar;
   if (v == null_bvar) {
-    v = create_boolean_variable(solver->core);
+    v = egraph_new_boolean_variable(solver->egraph);
     atm->boolvar = v;
-    attach_atom_to_bvar(solver->core, v, rdl_index2atom(id));
+    egraph_attach_atom_to_bvar(solver->egraph, v, rdl_index2atom(id));
   }
   return v;
 }
@@ -1707,7 +1707,7 @@ static bool rdl_add_edge(rdl_solver_t *solver, int32_t x, int32_t y, rdl_const_t
         v->data[i] = not(v->data[i]);
       }
       ivector_push(v, null_literal); // end marker
-      record_theory_conflict(solver->core, v->data);
+      egraph_record_conflict(solver->egraph, v->data);
 
       return false;
     }
@@ -1789,7 +1789,7 @@ static void check_atom_for_propagation(rdl_solver_t *solver, int32_t i) {
     expl = gen_rdl_prop_antecedent(solver, x, y);
     mark_atom_assigned(&solver->atoms, i);
     push_atom_index(&solver->astack, pos_index(i));
-    propagate_literal(solver->core, pos_lit(a->boolvar), expl);
+    egraph_propagate_literal(solver->egraph, pos_lit(a->boolvar), expl);
     return;
   }
 
@@ -1800,7 +1800,7 @@ static void check_atom_for_propagation(rdl_solver_t *solver, int32_t i) {
     expl = gen_rdl_prop_antecedent(solver, y, x);
     mark_atom_assigned(&solver->atoms, i);
     push_atom_index(&solver->astack, neg_index(i));
-    propagate_literal(solver->core, neg_lit(a->boolvar), expl);
+    egraph_propagate_literal(solver->egraph, neg_lit(a->boolvar), expl);
   }
 }
 
@@ -1845,7 +1845,7 @@ void rdl_start_internalization(rdl_solver_t *solver) {
  */
 void rdl_start_search(rdl_solver_t *solver) {
   if (solver->unsat_before_search) {
-    record_empty_theory_conflict(solver->core);
+    egraph_record_empty_conflict(solver->egraph);
   }
 }
 
@@ -2357,7 +2357,7 @@ static void rdl_assert_triple_eq(rdl_solver_t *solver, dl_triple_t *d, bool tt) 
     q_set_neg(&solver->q, &d->constant);            // q := -c
     l2 = rdl_make_atom(solver, x, y, &solver->q);   // atom (x - y <= -c)
 
-    add_binary_clause(solver->core, not(l1), not(l2));
+    egraph_add_binary_clause(solver->egraph, not(l1), not(l2));
   }
 }
 
@@ -2676,7 +2676,7 @@ void rdl_assert_cond_vareq_axiom(rdl_solver_t *solver, literal_t c, thvar_t v, t
   if (x == y) {
     if (q_is_nonzero(&triple->constant)) {
       // (x - y + d) == 0 is false
-      add_unit_clause(solver->core, not(c));
+      egraph_add_unit_clause(solver->egraph, not(c));
     }
     return;
   }
@@ -2696,8 +2696,8 @@ void rdl_assert_cond_vareq_axiom(rdl_solver_t *solver, literal_t c, thvar_t v, t
   l1 = rdl_make_atom(solver, y, x, &triple->constant);  // (y - x <= d)
   q_set_neg(&solver->q, &triple->constant);             /// q := -d
   l2 = rdl_make_atom(solver, x, y, &solver->q);         // (x - y <= -d)
-  add_binary_clause(solver->core, not(c), l1);
-  add_binary_clause(solver->core, not(c), l2);
+  egraph_add_binary_clause(solver->egraph, not(c), l1);
+  egraph_add_binary_clause(solver->egraph, not(c), l2);
 }
 
 
@@ -2722,7 +2722,7 @@ void rdl_assert_clause_vareq_axiom(rdl_solver_t *solver, uint32_t n, literal_t *
   if (x == y) {
     if (q_is_nonzero(&triple->constant)) {
       // (x - y + d) == 0 is false
-      add_clause(solver->core, n, c);
+      egraph_add_clause(solver->egraph, n, c);
     }
     return;
   }
@@ -2750,10 +2750,10 @@ void rdl_assert_clause_vareq_axiom(rdl_solver_t *solver, uint32_t n, literal_t *
 
   assert(aux->size == n);
   ivector_push(aux, l1);
-  add_clause(solver->core, n+1, aux->data);
+  egraph_add_clause(solver->egraph, n+1, aux->data);
 
   aux->data[n] = l2;
-  add_clause(solver->core, n+1, aux->data);
+  egraph_add_clause(solver->egraph, n+1, aux->data);
 
   ivector_reset(aux);
 }
@@ -3335,11 +3335,11 @@ static arith_interface_t rdl_intern = {
 
 /*
  * Initialize solver:
- * - core = attached smt_core solver
+ * - egraph = attached egraph kernel
  * - gates = the attached gate manager
  */
-void init_rdl_solver(rdl_solver_t *solver, smt_core_t *core, gate_manager_t *gates) {
-  solver->core = core;
+void init_rdl_solver(rdl_solver_t *solver, egraph_t *egraph, gate_manager_t *gates) {
+  solver->egraph = egraph;
   solver->gate_manager = gates;
   solver->base_level = 0;
   solver->decision_level = 0;

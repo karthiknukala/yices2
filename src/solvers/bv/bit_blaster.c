@@ -440,12 +440,12 @@ static uint32_t cbuffer_nvars(cbuffer_t *buffer) {
 
 /*
  * Initialization:
- * - solver and remap must be initialized outside this function
+ * - egraph and remap must be initialized outside this function
  */
-void init_bit_blaster(bit_blaster_t *s, smt_core_t *solver, remap_table_t *remap) {
-  s->solver = solver;
+void init_bit_blaster(bit_blaster_t *s, egraph_t *egraph, remap_table_t *remap) {
+  s->egraph = egraph;
   s->remap = remap;
-  s->htbl = get_gate_table(solver);
+  s->htbl = egraph_gate_table(egraph);
   init_cbuffer(&s->buffer);
   init_ivector(&s->aux_vector, 0);
   init_ivector(&s->aux_vector2, 0);
@@ -458,7 +458,7 @@ void init_bit_blaster(bit_blaster_t *s, smt_core_t *solver, remap_table_t *remap
  * Deletion: doesn't delete the solver
  */
 void delete_bit_blaster(bit_blaster_t *s) {
-  s->solver = NULL;
+  s->egraph = NULL;
   s->htbl = NULL;
   delete_ivector(&s->aux_vector);
   delete_ivector(&s->aux_vector2);
@@ -492,25 +492,25 @@ void reset_bit_blaster(bit_blaster_t *s) {
  * by invoking the corresponding functions in the smt_core.
  */
 static inline bval_t base_value(bit_blaster_t *s, literal_t l) {
-  return literal_base_value(s->solver, l);
+  return egraph_literal_base_value(s->egraph, l);
 }
 
 static inline void bit_blaster_add_empty_clause(bit_blaster_t *s) {
-  add_empty_clause(s->solver);
+  egraph_add_empty_clause(s->egraph);
 }
 
 static void bit_blaster_add_unit_clause(bit_blaster_t *s, literal_t l) {
 #if TRACE
   trace_unit_clause(s, l);
 #endif
-  add_unit_clause(s->solver, l);
+  egraph_add_unit_clause(s->egraph, l);
 }
 
 static void bit_blaster_add_binary_clause(bit_blaster_t *s, literal_t l1, literal_t l2) {
 #if TRACE
   trace_binary_clause(l1, l2);
 #endif
-  add_binary_clause(s->solver, l1, l2);
+  egraph_add_binary_clause(s->egraph, l1, l2);
 }
 
 
@@ -518,7 +518,7 @@ static void bit_blaster_add_ternary_clause(bit_blaster_t *s, literal_t l1, liter
 #if TRACE
   trace_ternary_clause(l1, l2, l3);
 #endif
-  add_ternary_clause(s->solver, l1, l2, l3);
+  egraph_add_ternary_clause(s->egraph, l1, l2, l3);
 }
 
 static void bit_blaster_add_quad_clause(bit_blaster_t *s, literal_t l1, literal_t l2, literal_t l3, literal_t l4) {
@@ -533,7 +533,7 @@ static void bit_blaster_add_quad_clause(bit_blaster_t *s, literal_t l1, literal_
   aux[2] = l3;
   aux[3] = l4;
 
-  add_clause(s->solver, 4, aux);
+  egraph_add_clause(s->egraph, 4, aux);
 }
 
 
@@ -541,12 +541,12 @@ static void bit_blaster_add_clause(bit_blaster_t *s, uint32_t n, literal_t *a) {
 #if TRACE
   trace_clause(n, a);
 #endif
-  add_clause(s->solver, n, a);
+  egraph_add_clause(s->egraph, n, a);
 }
 
 
 bvar_t bit_blaster_new_var(bit_blaster_t *s) {
-  return create_boolean_variable(s->solver);
+  return egraph_new_boolean_variable(s->egraph);
 }
 
 

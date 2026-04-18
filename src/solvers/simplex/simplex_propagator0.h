@@ -263,7 +263,7 @@ static void convert_bounds_to_literals(simplex_solver_t *solver, ivector_t *v) {
     assert(0 <= k && k < solver->bstack.top);
     l = solver->bstack.expl[k];
     if (l != null_literal) {
-      assert(literal_value(solver->core, l) == VAL_TRUE);
+      assert(egraph_literal_value(solver->egraph, l) == VAL_TRUE);
       v->data[j] = l;
       j ++;
     }
@@ -474,7 +474,7 @@ static void simplex_theory_prop(simplex_solver_t *solver, literal_t l, ivector_t
    * Theory propagation from a feasible tableau can't imply both l and not l
    * so l should be either true or undef in the core.
    */
-  assert(literal_value(solver->core, l) != VAL_FALSE);
+  assert(egraph_literal_value(solver->egraph, l) != VAL_FALSE);
 
   // build explanation as a conjunction of literals in v
   convert_bounds_to_literals(solver, v);
@@ -484,8 +484,8 @@ static void simplex_theory_prop(simplex_solver_t *solver, literal_t l, ivector_t
     solver->stats.num_prop_lemmas ++;
     convert_expl_to_clause(v);
     ivector_push(v, l);
-    add_clause(solver->core, v->size, v->data); // v may be modified but that's OK
-  } else if (literal_value(solver->core, l) == VAL_UNDEF) {
+    egraph_add_clause(solver->egraph, v->size, v->data); // v may be modified but that's OK
+  } else if (egraph_literal_value(solver->egraph, l) == VAL_UNDEF) {
     // copy the explanation in the arena (and add an end-marker)
     solver->stats.num_props ++;
     expl = (literal_t *) arena_alloc(&solver->arena, (n+1) * sizeof(literal_t));
@@ -493,7 +493,7 @@ static void simplex_theory_prop(simplex_solver_t *solver, literal_t l, ivector_t
       expl[i] = v->data[i];
     }
     expl[i] = null_literal;
-    propagate_literal(solver->core, l, expl);
+    egraph_propagate_literal(solver->egraph, l, expl);
 
 #if TRACE_PROPAGATION
   } else {
@@ -703,11 +703,11 @@ static void multiple_theory_props(simplex_solver_t *solver, ivector_t *v, ivecto
       k = v->data[i];
       assert(arith_atom_is_unmarked(&solver->atbl, atom_of_assertion(k)));
       l = literal_of_assertion(solver, k);
-      assert(literal_value(solver->core, l) != VAL_FALSE);
+      assert(egraph_literal_value(solver->egraph, l) != VAL_FALSE);
 
       // create the clause (w ==> l)
       w->data[m] = l;
-      add_clause(solver->core, w->size, w->data);
+      egraph_add_clause(solver->egraph, w->size, w->data);
 
 #if MARK_DERIVED_ATOMS
       // mark the atom and add it to the assertion queue
@@ -733,9 +733,9 @@ static void multiple_theory_props(simplex_solver_t *solver, ivector_t *v, ivecto
 
       // propagate l with expl as antecedent
       // BUG FIX: we check whether l is already applied (via an other row)
-      assert(literal_value(solver->core, l) != VAL_FALSE);
-      if (literal_value(solver->core, l) == VAL_UNDEF) {
-        propagate_literal(solver->core, l, expl);
+      assert(egraph_literal_value(solver->egraph, l) != VAL_FALSE);
+      if (egraph_literal_value(solver->egraph, l) == VAL_UNDEF) {
+        egraph_propagate_literal(solver->egraph, l, expl);
       }
 
 #if MARK_DERIVED_ATOMS

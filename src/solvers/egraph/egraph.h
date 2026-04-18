@@ -129,13 +129,125 @@ extern void delete_egraph(egraph_t *egraph);
  * ownership boundary is the egraph rather than the raw smt_core_t.
  */
 extern bvar_t egraph_new_boolean_variable(egraph_t *egraph);
+extern void egraph_attach_atom_to_bvar(egraph_t *egraph, bvar_t v, void *atom);
+extern void egraph_remove_bvar_atom(egraph_t *egraph, bvar_t v);
 extern void egraph_add_empty_clause(egraph_t *egraph);
 extern void egraph_add_unit_clause(egraph_t *egraph, literal_t l);
 extern void egraph_add_binary_clause(egraph_t *egraph, literal_t l1, literal_t l2);
+extern void egraph_add_ternary_clause(egraph_t *egraph, literal_t l1, literal_t l2, literal_t l3);
 extern void egraph_add_clause(egraph_t *egraph, uint32_t n, literal_t *a);
+extern void egraph_implied_literal(egraph_t *egraph, literal_t l, antecedent_t a);
 extern void egraph_propagate_literal(egraph_t *egraph, literal_t l, void *expl);
+extern void egraph_record_empty_conflict(egraph_t *egraph);
+extern void egraph_record_unit_conflict(egraph_t *egraph, literal_t l);
+extern void egraph_record_binary_conflict(egraph_t *egraph, literal_t l1, literal_t l2);
+extern void egraph_record_ternary_conflict(egraph_t *egraph, literal_t l1, literal_t l2, literal_t l3);
 extern void egraph_record_conflict(egraph_t *egraph, literal_t *a);
+extern uint32_t egraph_add_quant_lemmas(egraph_t *egraph, literal_t en, ivector_t *units);
 extern void egraph_build_unsat_core(egraph_t *egraph, ivector_t *v);
+extern void egraph_bump_conflicts(egraph_t *egraph, uint64_t delta);
+extern void egraph_collect_free_bool_vars(egraph_t *egraph, free_bool_vars_t *fv);
+extern void egraph_print_binary_clauses(FILE *f, egraph_t *egraph);
+extern void egraph_print_problem_clauses(FILE *f, egraph_t *egraph);
+extern void egraph_print_learned_clauses(FILE *f, egraph_t *egraph);
+extern void egraph_print_lemmas(FILE *f, egraph_t *egraph);
+extern void egraph_print_clauses(FILE *f, egraph_t *egraph);
+extern void egraph_print_boolean_assignment(FILE *f, egraph_t *egraph);
+
+static inline bool egraph_bvar_has_atom(egraph_t *egraph, bvar_t v) {
+  assert(egraph != NULL && egraph->core != NULL);
+  return bvar_has_atom(egraph->core, v);
+}
+
+static inline void *egraph_bvar_atom(egraph_t *egraph, bvar_t v) {
+  assert(egraph != NULL && egraph->core != NULL);
+  return bvar_atom(egraph->core, v);
+}
+
+static inline bval_t egraph_bvar_value(egraph_t *egraph, bvar_t v) {
+  assert(egraph != NULL && egraph->core != NULL);
+  return bvar_value(egraph->core, v);
+}
+
+static inline bval_t egraph_bvar_base_value(egraph_t *egraph, bvar_t v) {
+  assert(egraph != NULL && egraph->core != NULL);
+  return bvar_base_value(egraph->core, v);
+}
+
+static inline bval_t egraph_literal_value(egraph_t *egraph, literal_t l) {
+  assert(egraph != NULL && egraph->core != NULL);
+  return literal_value(egraph->core, l);
+}
+
+static inline bval_t egraph_literal_base_value(egraph_t *egraph, literal_t l) {
+  assert(egraph != NULL && egraph->core != NULL);
+  return literal_base_value(egraph->core, l);
+}
+
+static inline bool egraph_literal_is_assigned(egraph_t *egraph, literal_t l) {
+  assert(egraph != NULL && egraph->core != NULL);
+  return literal_is_assigned(egraph->core, l);
+}
+
+static inline tracer_t *egraph_trace(egraph_t *egraph) {
+  assert(egraph != NULL && egraph->core != NULL);
+  return egraph->core->trace;
+}
+
+static inline gate_table_t *egraph_gate_table(egraph_t *egraph) {
+  assert(egraph != NULL && egraph->core != NULL);
+  return get_gate_table(egraph->core);
+}
+
+static inline uint32_t egraph_decision_level(egraph_t *egraph) {
+  assert(egraph != NULL && egraph->core != NULL);
+  return smt_decision_level(egraph->core);
+}
+
+static inline uint32_t egraph_base_level(egraph_t *egraph) {
+  assert(egraph != NULL && egraph->core != NULL);
+  return smt_base_level(egraph->core);
+}
+
+static inline smt_status_t egraph_status(egraph_t *egraph) {
+  assert(egraph != NULL && egraph->core != NULL);
+  return smt_status(egraph->core);
+}
+
+static inline uint64_t egraph_num_decisions(egraph_t *egraph) {
+  assert(egraph != NULL && egraph->core != NULL);
+  return num_decisions(egraph->core);
+}
+
+static inline uint64_t egraph_total_conflicts(egraph_t *egraph) {
+  assert(egraph != NULL && egraph->core != NULL);
+  return num_conflicts(egraph->core);
+}
+
+static inline uint32_t egraph_num_boolean_vars(egraph_t *egraph) {
+  assert(egraph != NULL && egraph->core != NULL);
+  return num_vars(egraph->core);
+}
+
+static inline uint32_t egraph_num_unit_clauses(egraph_t *egraph) {
+  assert(egraph != NULL && egraph->core != NULL);
+  return num_unit_clauses(egraph->core);
+}
+
+static inline uint32_t egraph_num_binary_clauses(egraph_t *egraph) {
+  assert(egraph != NULL && egraph->core != NULL);
+  return num_binary_clauses(egraph->core);
+}
+
+static inline uint32_t egraph_num_problem_clauses(egraph_t *egraph) {
+  assert(egraph != NULL && egraph->core != NULL);
+  return num_prob_clauses(egraph->core);
+}
+
+static inline uint64_t egraph_num_problem_literals(egraph_t *egraph) {
+  assert(egraph != NULL && egraph->core != NULL);
+  return num_prob_literals(egraph->core);
+}
 
 /*
  * Search entry point for the egraph-centered CDCL(T) kernel.

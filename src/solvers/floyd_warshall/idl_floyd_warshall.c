@@ -1235,9 +1235,9 @@ static bvar_t bvar_for_atom(idl_solver_t *solver, int32_t x, int32_t y, int32_t 
   atm = get_idl_atom(&solver->atoms, id);
   v = atm->boolvar;
   if (v == null_bvar) {
-    v = create_boolean_variable(solver->core);
+    v = egraph_new_boolean_variable(solver->egraph);
     atm->boolvar = v;
-    attach_atom_to_bvar(solver->core, v, index2atom(id));
+    egraph_attach_atom_to_bvar(solver->egraph, v, index2atom(id));
   }
   return v;
 }
@@ -1403,7 +1403,7 @@ static bool idl_add_edge(idl_solver_t *solver, int32_t x, int32_t y, int32_t d, 
       v->data[i] = not(v->data[i]);
     }
     ivector_push(v, null_literal); // end marker
-    record_theory_conflict(solver->core, v->data);
+    egraph_record_conflict(solver->egraph, v->data);
 
     return false;
   }
@@ -1480,7 +1480,7 @@ static void check_atom_for_propagation(idl_solver_t *solver, int32_t i) {
     expl = gen_idl_prop_antecedent(solver, x, y);
     mark_atom_assigned(&solver->atoms, i);
     push_atom_index(&solver->astack, pos_index(i));
-    propagate_literal(solver->core, pos_lit(a->boolvar), expl);
+    egraph_propagate_literal(solver->egraph, pos_lit(a->boolvar), expl);
 #if TRACE
     printf("---> IDL propagation: ");
     print_idl_atom(stdout, a);
@@ -1499,7 +1499,7 @@ static void check_atom_for_propagation(idl_solver_t *solver, int32_t i) {
     expl = gen_idl_prop_antecedent(solver, y, x);
     mark_atom_assigned(&solver->atoms, i);
     push_atom_index(&solver->astack, neg_index(i));
-    propagate_literal(solver->core, neg_lit(a->boolvar), expl);
+    egraph_propagate_literal(solver->egraph, neg_lit(a->boolvar), expl);
 #if TRACE
     printf("---> IDL propagation: ");
     print_idl_atom(stdout, a);
@@ -1553,7 +1553,7 @@ void idl_start_internalization(idl_solver_t *solver) {
  */
 void idl_start_search(idl_solver_t *solver) {
   if (solver->unsat_before_search) {
-    record_empty_theory_conflict(solver->core);
+    egraph_record_empty_conflict(solver->egraph);
   }
 }
 
@@ -2090,7 +2090,7 @@ static void idl_assert_triple_eq(idl_solver_t *solver, dl_triple_t *d, bool tt) 
 
     l1 = idl_make_atom(solver, y, x, c);   // atom (y - x <= c)
     l2 = idl_make_atom(solver, x, y, -c);  // atom (x - y <= -c)
-    add_binary_clause(solver->core, not(l1), not(l2));
+    egraph_add_binary_clause(solver->egraph, not(l1), not(l2));
   }
 }
 
@@ -2418,7 +2418,7 @@ void idl_assert_cond_vareq_axiom(idl_solver_t *solver, literal_t c, thvar_t v, t
   if (x == y) {
     if (q_is_nonzero(&triple->constant)) {
       // (x - y + constant) == 0 is false
-      add_unit_clause(solver->core, not(c));
+      egraph_add_unit_clause(solver->egraph, not(c));
     }
     return;
   }
@@ -2445,8 +2445,8 @@ void idl_assert_cond_vareq_axiom(idl_solver_t *solver, literal_t c, thvar_t v, t
 
   l1 = idl_make_atom(solver, y, x, d);  // (y - x <= d)
   l2 = idl_make_atom(solver, x, y, -d); // (x - y <= -d)
-  add_binary_clause(solver->core, not(c), l1);
-  add_binary_clause(solver->core, not(c), l2);
+  egraph_add_binary_clause(solver->egraph, not(c), l1);
+  egraph_add_binary_clause(solver->egraph, not(c), l2);
 }
 
 
@@ -2472,7 +2472,7 @@ void idl_assert_clause_vareq_axiom(idl_solver_t *solver, uint32_t n, literal_t *
   if (x == y) {
     if (q_is_nonzero(&triple->constant)) {
       // (x - y + d) == 0 is false
-      add_clause(solver->core, n, c);
+      egraph_add_clause(solver->egraph, n, c);
     }
     return;
   }
@@ -2506,10 +2506,10 @@ void idl_assert_clause_vareq_axiom(idl_solver_t *solver, uint32_t n, literal_t *
 
   assert(aux->size == n);
   ivector_push(aux, l1);
-  add_clause(solver->core, n+1, aux->data);
+  egraph_add_clause(solver->egraph, n+1, aux->data);
 
   aux->data[n] = l2;
-  add_clause(solver->core, n+1, aux->data);
+  egraph_add_clause(solver->egraph, n+1, aux->data);
 
   ivector_reset(aux);
 }
@@ -2778,11 +2778,11 @@ static arith_interface_t idl_intern = {
 
 /*
  * initialize solver:
- * - core = attached smt_core solver
+ * - egraph = attached egraph kernel
  * - gates = the attached gate manager
  */
-void init_idl_solver(idl_solver_t *solver, smt_core_t *core, gate_manager_t *gates) {
-  solver->core = core;
+void init_idl_solver(idl_solver_t *solver, egraph_t *egraph, gate_manager_t *gates) {
+  solver->egraph = egraph;
   solver->gate_manager = gates;
   solver->base_level = 0;
   solver->decision_level = 0;

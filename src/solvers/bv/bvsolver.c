@@ -69,7 +69,7 @@ static void print_solver_state(FILE *f, bv_solver_t *solver) {
     print_gate_table(f, solver->blaster->htbl);
   }
   fprintf(f, "\n--- Clauses ---\n");
-  print_clauses(f, solver->core);
+  egraph_print_clauses(f, solver->egraph);
   fprintf(f, "\n");
 }
 
@@ -867,7 +867,7 @@ static literal_t bvvar_get_bit(bv_solver_t *solver, thvar_t x, uint32_t i) {
   l = remap_table_find(rmap, r);           // l := real literal for r
   if (l == null_literal) {
     // nothing attached to r: create a new literal and attach it to r
-    l = pos_lit(create_boolean_variable(solver->core));
+    l = pos_lit(egraph_new_boolean_variable(solver->egraph));
     remap_table_assign(rmap, r, l);
   }
 
@@ -892,7 +892,7 @@ static void bv_solver_prepare_blasting(bv_solver_t *solver) {
   if (solver->blaster == NULL) {
     remap = bv_solver_get_remap(solver);
     blaster = (bit_blaster_t *) safe_malloc(sizeof(bit_blaster_t));
-    init_bit_blaster(blaster, solver->core, remap);
+    init_bit_blaster(blaster, solver->egraph, remap);
     solver->blaster = blaster;
   }
 }
@@ -1402,7 +1402,7 @@ static uint32_t bv_is_power_of_two(bit_blaster_t *blaster, literal_t *a, uint32_
 
   k = n;
   for (i=0; i<n; i++) {
-    switch (literal_base_value(blaster->solver, a[i])) {
+    switch (egraph_literal_base_value(blaster->egraph, a[i])) {
     case VAL_FALSE:
       break;
 
@@ -1433,7 +1433,7 @@ static uint32_t bv_is_minus_power_of_two(bit_blaster_t *blaster, literal_t *a, u
 
   k = n;
   for (i=0; i<n; i++) {
-    switch (literal_base_value(blaster->solver, a[i])) {
+    switch (egraph_literal_base_value(blaster->egraph, a[i])) {
     case VAL_FALSE:
       if (k < n) goto done;
       break;
@@ -1971,11 +1971,11 @@ bool bv_solver_bitblast(bv_solver_t *solver) {
 
 #if 0
   printf("Statistics\n");
-  printf("num. bool vars:                 %"PRIu32"\n", num_vars(solver->core));
-  printf("num. unit clauses:              %"PRIu32"\n", num_unit_clauses(solver->core));
-  printf("num. binary clauses:            %"PRIu32"\n", num_binary_clauses(solver->core));
-  printf("num. main clauses:              %"PRIu32"\n", num_prob_clauses(solver->core));
-  printf("num. clause literals:           %"PRIu64"\n\n", num_prob_literals(solver->core));
+  printf("num. bool vars:                 %"PRIu32"\n", egraph_num_boolean_vars(solver->egraph));
+  printf("num. unit clauses:              %"PRIu32"\n", egraph_num_unit_clauses(solver->egraph));
+  printf("num. binary clauses:            %"PRIu32"\n", egraph_num_binary_clauses(solver->egraph));
+  printf("num. main clauses:              %"PRIu32"\n", egraph_num_problem_clauses(solver->egraph));
+  printf("num. clause literals:           %"PRIu64"\n\n", egraph_num_problem_literals(solver->egraph));
 #endif
 
   //  printf("\nBVSOLVER BITBLAST\n");
@@ -2335,12 +2335,12 @@ static void bv_solver_remove_bounds(bv_solver_t *solver, uint32_t n) {
  * Check whether a bound atom on x is a lower or upper bound
  * - x must be the variable in bound_atom i
  */
-static inline bool lit_is_true(smt_core_t *core, literal_t l) {
-  return literal_base_value(core, l) == VAL_TRUE;
+static inline bool lit_is_true(egraph_t *egraph, literal_t l) {
+  return egraph_literal_base_value(egraph, l) == VAL_TRUE;
 }
 
-static inline bool lit_is_false(smt_core_t *core, literal_t l) {
-  return literal_base_value(core, l) == VAL_FALSE;
+static inline bool lit_is_false(egraph_t *egraph, literal_t l) {
+  return egraph_literal_base_value(egraph, l) == VAL_FALSE;
 }
 
 // upper bound unsigned
@@ -2351,8 +2351,8 @@ static bool bound_is_ub(bv_solver_t *solver, thvar_t x, int32_t i) {
   a = bvatom_desc(&solver->atbl, i);
   if (bvatm_is_ge(a)) {
     // either (bvge x c) or (bvge c x)
-    return (x == a->left && lit_is_false(solver->core, a->lit)) // (bvge x c) is false so x <= c-1
-      || (x == a->right && lit_is_true(solver->core, a->lit));  // (bvge c x) is true so  x <= c
+    return (x == a->left && lit_is_false(solver->egraph, a->lit)) // (bvge x c) is false so x <= c-1
+      || (x == a->right && lit_is_true(solver->egraph, a->lit));  // (bvge c x) is true so  x <= c
   }
 
   return false;
@@ -2366,8 +2366,8 @@ static bool bound_is_lb(bv_solver_t *solver, thvar_t x, int32_t i) {
   a = bvatom_desc(&solver->atbl, i);
   if (bvatm_is_ge(a)) {
     // either (bvge x c) or (bvge c x)
-    return (x == a->left && lit_is_true(solver->core, a->lit))  // (bvge x c) is true so x >= c
-      || (x == a->right && lit_is_false(solver->core, a->lit)); // (bvge c x) is false so x >= c+1
+    return (x == a->left && lit_is_true(solver->egraph, a->lit))  // (bvge x c) is true so x >= c
+      || (x == a->right && lit_is_false(solver->egraph, a->lit)); // (bvge c x) is false so x >= c+1
   }
 
   return false;
@@ -2381,8 +2381,8 @@ static bool bound_is_signed_ub(bv_solver_t *solver, thvar_t x, int32_t i) {
   a = bvatom_desc(&solver->atbl, i);
   if (bvatm_is_sge(a)) {
     // either (bvsge x c) or (bvsge c x)
-    return (x == a->left && lit_is_false(solver->core, a->lit)) // (bvge x c) is false so x <= c-1
-      || (x == a->right && lit_is_true(solver->core, a->lit));  // (bvge c x) is true so  x <= c
+    return (x == a->left && lit_is_false(solver->egraph, a->lit)) // (bvge x c) is false so x <= c-1
+      || (x == a->right && lit_is_true(solver->egraph, a->lit));  // (bvge c x) is true so  x <= c
   }
 
   return false;
@@ -2396,8 +2396,8 @@ static bool bound_is_signed_lb(bv_solver_t *solver, thvar_t x, int32_t i) {
   a = bvatom_desc(&solver->atbl, i);
   if (bvatm_is_sge(a)) {
     // either (bvsge x c) or (bvsge c x)
-    return (x == a->left && lit_is_true(solver->core, a->lit))  // (bvsge x c) is true so x >= c
-      || (x == a->right && lit_is_false(solver->core, a->lit)); // (bvsge c x) is false so x >= c+1
+    return (x == a->left && lit_is_true(solver->egraph, a->lit))  // (bvsge x c) is true so x >= c
+      || (x == a->right && lit_is_false(solver->egraph, a->lit)); // (bvsge c x) is false so x >= c+1
   }
 
   return false;
@@ -4244,7 +4244,7 @@ static bool bvuge_simplifies_to_bveq(bv_solver_t *solver, thvar_t x, thvar_t y) 
   i = find_bvuge_atom(&solver->atbl, y, x); // atom (bvuge y x)
   if (i >= 0) {
     a = bvatom_desc(&solver->atbl, i);
-    return lit_is_true(solver->core, a->lit); // check whether (bvuge y x) is true 
+    return lit_is_true(solver->egraph, a->lit); // check whether (bvuge y x) is true 
   }
   return false;
 }
@@ -4261,7 +4261,7 @@ static bool bvsge_simplifies_to_bveq(bv_solver_t *solver, thvar_t x, thvar_t y) 
   i = find_bvsge_atom(&solver->atbl, y, x); // atom (bvsge y x)
   if (i >= 0) {
     a = bvatom_desc(&solver->atbl, i);
-    return lit_is_true(solver->core, a->lit); // check whether (bvsge y x) is true 
+    return lit_is_true(solver->egraph, a->lit); // check whether (bvsge y x) is true 
   }
   return false;  
 }
@@ -5115,7 +5115,7 @@ static void assert_urem_bounds(bv_solver_t *solver, thvar_t x, thvar_t y) {
   zero = get_zero(solver, n);
   l0 = bv_solver_create_eq_atom(solver, y, zero); // (y == 0)
   l1 = bv_solver_create_ge_atom(solver, x, y);    // (bvurem z y) >= y
-  add_binary_clause(solver->core, l0, not(l1));
+  egraph_add_binary_clause(solver->egraph, l0, not(l1));
 }
 
 
@@ -5143,11 +5143,11 @@ static void assert_srem_bounds(bv_solver_t *solver, thvar_t x, thvar_t y) {
 
   l0 = bv_solver_create_sge_atom(solver, zero, y); // (y <= 0)
   l1 = bv_solver_create_sge_atom(solver, x, y);    // (bvsrem z y) >= y
-  add_binary_clause(solver->core, l0, not(l1));    // (y > 0) ==> (bvsrem z y) < y
+  egraph_add_binary_clause(solver->egraph, l0, not(l1));    // (y > 0) ==> (bvsrem z y) < y
 
   l0 = bv_solver_create_sge_atom(solver, y, zero); // (y >= 0)
   l1 = bv_solver_create_sge_atom(solver, y, x);    // y >= (bvsrem z y)
-  add_binary_clause(solver->core, l0, not(l1));    // (y < 0) ==> y < (bvsrem z y)
+  egraph_add_binary_clause(solver->egraph, l0, not(l1));    // (y < 0) ==> y < (bvsrem z y)
 }
 
 
@@ -6074,10 +6074,10 @@ static literal_t bv_solver_make_eq_atom(bv_solver_t *solver, thvar_t x, thvar_t 
     /*
      * New atom: assign a fresh boolean variable for it
      */
-    v = create_boolean_variable(solver->core);
+    v = egraph_new_boolean_variable(solver->egraph);
     l = pos_lit(v);
     atbl->data[i].lit = l;
-    attach_atom_to_bvar(solver->core, v, bvatom_idx2tagged_ptr(i));
+    egraph_attach_atom_to_bvar(solver->egraph, v, bvatom_idx2tagged_ptr(i));
     solver->stats.eq_atoms ++;
   }
 
@@ -6131,10 +6131,10 @@ static literal_t bv_solver_make_ge_atom(bv_solver_t *solver, thvar_t x, thvar_t 
     /*
      * New atom: assign a fresh boolean variable for it
      */
-    v = create_boolean_variable(solver->core);
+    v = egraph_new_boolean_variable(solver->egraph);
     l = pos_lit(v);
     atbl->data[i].lit = l;
-    attach_atom_to_bvar(solver->core, v, bvatom_idx2tagged_ptr(i));
+    egraph_attach_atom_to_bvar(solver->egraph, v, bvatom_idx2tagged_ptr(i));
     solver->stats.ge_atoms ++;
   }
 
@@ -6205,10 +6205,10 @@ static literal_t bv_solver_make_sge_atom(bv_solver_t *solver, thvar_t x, thvar_t
     /*
      * New atom: assign a fresh boolean variable for it
      */
-    v = create_boolean_variable(solver->core);
+    v = egraph_new_boolean_variable(solver->egraph);
     l = pos_lit(v);
     atbl->data[i].lit = l;
-    attach_atom_to_bvar(solver->core, v, bvatom_idx2tagged_ptr(i));
+    egraph_attach_atom_to_bvar(solver->egraph, v, bvatom_idx2tagged_ptr(i));
     solver->stats.sge_atoms ++;
   }
 
@@ -6287,10 +6287,10 @@ static void bv_solver_assert_neq0(bv_solver_t *solver, thvar_t x, thvar_t y) {
     /*
      * New atom: (x != 0) can't be in the bound queue
      */
-    v = create_boolean_variable(solver->core);
+    v = egraph_new_boolean_variable(solver->egraph);
     l = pos_lit(v);
     atbl->data[i].lit = l;
-    attach_atom_to_bvar(solver->core, v, bvatom_idx2tagged_ptr(i));
+    egraph_attach_atom_to_bvar(solver->egraph, v, bvatom_idx2tagged_ptr(i));
     push_bvdiseq_bound(solver, x, y);
 
   } else if (! bvvar_is_nonzero(solver, x)) {
@@ -6300,7 +6300,7 @@ static void bv_solver_assert_neq0(bv_solver_t *solver, thvar_t x, thvar_t y) {
     push_bvdiseq_bound(solver, x, y);
   }
 
-  add_unit_clause(solver->core, not(l));
+  egraph_add_unit_clause(solver->egraph, not(l));
 }
 
 
@@ -6325,13 +6325,13 @@ void bv_solver_assert_eq_axiom(bv_solver_t *solver, thvar_t x, thvar_t y, bool t
   y = mtbl_get_root(&solver->mtbl, y);
 
   if (equal_bvvar(solver, x, y)) {
-    if (! tt) add_empty_clause(solver->core);     // Contradiction
+    if (! tt) egraph_add_empty_clause(solver->egraph);     // Contradiction
     return;
   }
 
   //  if (diseq_bvvar(solver, x, y) || bounds_imply_diseq(solver, x, y)) {
   if (diseq_bvvar(solver, x, y)) {
-    if (tt) add_empty_clause(solver->core);       // Contradiction
+    if (tt) egraph_add_empty_clause(solver->egraph);       // Contradiction
     return;
   }
 
@@ -6339,13 +6339,13 @@ void bv_solver_assert_eq_axiom(bv_solver_t *solver, thvar_t x, thvar_t y, bool t
   if (simplify_eq(solver, &x, &y)) {
     // simplify may result in x == y
     if (x == y) {
-      if (! tt) add_empty_clause(solver->core);
+      if (! tt) egraph_add_empty_clause(solver->egraph);
       return;
     }
 
     //    if (diseq_bvvar(solver, x, y) || bounds_imply_diseq(solver, x, y)) {
     if (diseq_bvvar(solver, x, y)) {
-      if (tt) add_empty_clause(solver->core);
+      if (tt) egraph_add_empty_clause(solver->egraph);
       return;
     }
   }
@@ -6366,7 +6366,7 @@ void bv_solver_assert_eq_axiom(bv_solver_t *solver, thvar_t x, thvar_t y, bool t
   } else {
     // Add the constraint (x != y)
     l = bv_solver_make_eq_atom(solver, x, y);
-    add_unit_clause(solver->core, not(l));
+    egraph_add_unit_clause(solver->egraph, not(l));
   }
 }
 
@@ -6407,16 +6407,16 @@ void bv_solver_assert_ge_axiom(bv_solver_t *solver, thvar_t x, thvar_t y, bool t
   } else {
     switch (check_bvuge(solver, x, y)) {
     case BVTEST_FALSE:
-      if (tt) add_empty_clause(solver->core); // x < y holds
+      if (tt) egraph_add_empty_clause(solver->egraph); // x < y holds
       break;
 
     case BVTEST_TRUE:
-      if (!tt) add_empty_clause(solver->core); // x >= y holds
+      if (!tt) egraph_add_empty_clause(solver->egraph); // x >= y holds
       break;
 
     case BVTEST_UNKNOWN:
       l = bv_solver_make_ge_atom(solver, x, y);
-      add_unit_clause(solver->core, signed_literal(l, tt));
+      egraph_add_unit_clause(solver->egraph, signed_literal(l, tt));
       // push the bound into the queue
       if (is_bv_bound_pair(&solver->vtbl, x, y)) {
         push_bvuge_bound(solver, x, y);
@@ -6463,16 +6463,16 @@ void bv_solver_assert_sge_axiom(bv_solver_t *solver, thvar_t x, thvar_t y, bool 
   } else {
     switch (check_bvsge(solver, x, y)) {
     case BVTEST_FALSE:
-      if (tt) add_empty_clause(solver->core); // x < y holds
+      if (tt) egraph_add_empty_clause(solver->egraph); // x < y holds
       break;
 
     case BVTEST_TRUE:
-      if (!tt) add_empty_clause(solver->core); // x >= y holds
+      if (!tt) egraph_add_empty_clause(solver->egraph); // x >= y holds
       break;
 
     case BVTEST_UNKNOWN:
       l = bv_solver_make_sge_atom(solver, x, y);
-      add_unit_clause(solver->core, signed_literal(l, tt));
+      egraph_add_unit_clause(solver->egraph, signed_literal(l, tt));
       // push the bound into the queue
       if (is_bv_bound_pair(&solver->vtbl, x, y)) {
         push_bvsge_bound(solver, x, y);
@@ -6490,7 +6490,7 @@ void bv_solver_set_bit(bv_solver_t *solver, thvar_t x, uint32_t i, bool tt) {
   literal_t l;
 
   l = bv_solver_select_bit(solver, x, i);
-  add_unit_clause(solver->core, signed_literal(l, tt));
+  egraph_add_unit_clause(solver->egraph, signed_literal(l, tt));
 }
 
 
@@ -6599,9 +6599,9 @@ static literal_t on_the_fly_eq_atom(bv_solver_t *solver, thvar_t x, thvar_t y) {
       l = bit_blaster_make_bveq(solver->blaster, a->data, b->data, a->size);
       atbl->data[i].lit = l;
       v = var_of(l);
-      if (bvar_has_atom(solver->core, v)) {
+      if (egraph_bvar_has_atom(solver->egraph, v)) {
         // need a fresh variable
-        v = create_boolean_variable(solver->core);
+        v = egraph_new_boolean_variable(solver->egraph);
         l0 = pos_lit(v);
         atbl->data[i].lit = l0;
         // assert (l == l0) in the core
@@ -6615,12 +6615,12 @@ static literal_t on_the_fly_eq_atom(bv_solver_t *solver, thvar_t x, thvar_t y) {
        */
       solver->stats.eq_atoms ++;
 
-      v = create_boolean_variable(solver->core);
+      v = egraph_new_boolean_variable(solver->egraph);
       l = pos_lit(v);
       atbl->data[i].lit = l;
     }
 
-    attach_atom_to_bvar(solver->core, v, bvatom_idx2tagged_ptr(i));
+    egraph_attach_atom_to_bvar(solver->egraph, v, bvatom_idx2tagged_ptr(i));
 
   }
 
@@ -6695,7 +6695,7 @@ static void diagnose_bvequiv(bv_solver_t *solver, thvar_t x1, thvar_t y1) {
   if (i >= 0) {
     // the atom exists
     l = atbl->data[i].lit;
-    switch (literal_value(solver->core, l)) {
+    switch (egraph_literal_value(solver->egraph, l)) {
     case VAL_FALSE:
       printf("---> BVSOLVER: bvequiv: (bveq u!%"PRId32" u!%"PRId32") is false (atom set to false)\n", x1, y1);
       fflush(stdout);
@@ -6726,8 +6726,8 @@ static void diagnose_bvequiv(bv_solver_t *solver, thvar_t x1, thvar_t y1) {
     for (j=0; j<n; j++) {
       l1 = a->data[j];
       l2 = b->data[j];
-      if ((literal_value(solver->core, l1) == VAL_FALSE && literal_value(solver->core, l2) == VAL_TRUE)
-          || (literal_value(solver->core, l1) == VAL_TRUE && literal_value(solver->core, l2) == VAL_FALSE)) {
+      if ((egraph_literal_value(solver->egraph, l1) == VAL_FALSE && egraph_literal_value(solver->egraph, l2) == VAL_TRUE)
+          || (egraph_literal_value(solver->egraph, l1) == VAL_TRUE && egraph_literal_value(solver->egraph, l2) == VAL_FALSE)) {
         printf("---> BVSOLVER: bvequiv: (bveq u!%"PRId32" u!%"PRId32") is false (bits %"PRIu32" differ)\n", x1, y1, j);
         fflush(stdout);
         return;
@@ -6764,7 +6764,7 @@ static bool bv_solver_bvequiv_redundant(bv_solver_t *solver, thvar_t x1, thvar_t
   i = find_bveq_atom(atbl, y1, y2);
   if (i >= 0) {
     l = atbl->data[i].lit;
-    return literal_value(solver->core, l) == VAL_TRUE;
+    return egraph_literal_value(solver->egraph, l) == VAL_TRUE;
   }
 
   return false;
@@ -6795,7 +6795,7 @@ static void bv_solver_half_equiv_lemma(bv_solver_t *solver, thvar_t x1, thvar_t 
     v->data[i] = not(v->data[i]);
   }
   ivector_push(v, l);
-  add_clause(solver->core, v->size, v->data);
+  egraph_add_clause(solver->egraph, v->size, v->data);
 
   solver->stats.half_equiv_lemmas ++;
 }
@@ -6858,8 +6858,8 @@ static void bv_solver_bvequiv_lemma(bv_solver_t *solver, thvar_t x1, thvar_t x2)
     l = on_the_fly_eq_atom(solver, x1, x2);
 
     // add two clauses: (l => eq) and (eq => l)
-    add_binary_clause(solver->core, not(l), eq);
-    add_binary_clause(solver->core, l, not(eq));
+    egraph_add_binary_clause(solver->egraph, not(l), eq);
+    egraph_add_binary_clause(solver->egraph, l, not(eq));
 
     // update statistics
     solver->stats.equiv_lemmas ++;
@@ -6941,7 +6941,7 @@ static void bv_solver_add_conflict(bv_solver_t *solver, ivector_t *v) {
   }
 
   ivector_push(v, null_literal); // end marker
-  record_theory_conflict(solver->core, v->data);
+  egraph_record_conflict(solver->egraph, v->data);
 }
 
 
@@ -6994,7 +6994,7 @@ static bool bv_solver_bvequiv_conflict(bv_solver_t *solver, thvar_t x1, thvar_t 
      * the conflict is (t1 == t2) and (not l)
      */
     l = atbl->data[i].lit;
-    if (literal_value(solver->core, l) == VAL_FALSE) {
+    if (egraph_literal_value(solver->egraph, l) == VAL_FALSE) {
       bv_solver_explain_egraph_eq(solver, x1, x2, id, v);
       ivector_push(v, not(l));
       goto conflict;
@@ -7015,14 +7015,14 @@ static bool bv_solver_bvequiv_conflict(bv_solver_t *solver, thvar_t x1, thvar_t 
     for (j=0; j<n; j++) {
       l1 = a->data[j];
       l2 = b->data[j];
-      if (literal_value(solver->core, l1) == VAL_FALSE && literal_value(solver->core, l2) == VAL_TRUE) {
+      if (egraph_literal_value(solver->egraph, l1) == VAL_FALSE && egraph_literal_value(solver->egraph, l2) == VAL_TRUE) {
         bv_solver_explain_egraph_eq(solver, x1, x2, id, v);
         ivector_push(v, not(l1));
         ivector_push(v, l2);
         goto conflict;
       }
 
-      if (literal_value(solver->core, l1) == VAL_TRUE && literal_value(solver->core, l2) == VAL_FALSE) {
+      if (egraph_literal_value(solver->egraph, l1) == VAL_TRUE && egraph_literal_value(solver->egraph, l2) == VAL_FALSE) {
         bv_solver_explain_egraph_eq(solver, x1, x2, id, v);
         ivector_push(v, l1);
         ivector_push(v, not(l2));
@@ -7136,7 +7136,7 @@ void bv_solver_start_search(bv_solver_t *solver) {
 
   feasible = bv_solver_bitblast(solver);
   if (! feasible) {
-    add_empty_clause(solver->core);
+    egraph_add_empty_clause(solver->egraph);
     return;
   }
 
@@ -7174,7 +7174,7 @@ void bv_solver_increase_decision_level(bv_solver_t *solver) {
   solver->decision_level ++;
 
 #if DUMP
-  if (solver->core->stats.decisions == 1) {
+  if (egraph_num_decisions(solver->egraph) == 1) {
     bv_solver_dump_state(solver, "after-bitblasting.dmp");
   }
 #endif
@@ -7227,11 +7227,9 @@ literal_t bv_solver_select_polarity(bv_solver_t *solver, void *a, literal_t l) {
 
 /*
  * Initialize a bit-vector solver
- * - core = the attached smt core
- * - egraph = the attached egraph (or NULL)
+ * - egraph = the attached egraph kernel
  */
-void init_bv_solver(bv_solver_t *solver, smt_core_t *core, egraph_t *egraph) {
-  solver->core = core;
+void init_bv_solver(bv_solver_t *solver, egraph_t *egraph) {
   solver->egraph = egraph;
   solver->base_level = 0;
   solver->decision_level = 0;
@@ -7752,7 +7750,7 @@ bool bv_solver_var_is_constant(bv_solver_t *solver, thvar_t x) {
 static bool bv_solver_var_equal_in_model(bv_solver_t *solver, thvar_t x1, thvar_t x2) {
   bv_vartable_t *vtbl;
   remap_table_t *rmap;
-  smt_core_t *core;
+  egraph_t *egraph;
   literal_t *m1, *m2;
   literal_t s1, s2;
   literal_t l1, l2;
@@ -7774,7 +7772,7 @@ static bool bv_solver_var_equal_in_model(bv_solver_t *solver, thvar_t x1, thvar_
   assert(m1 != NULL && m2 != NULL);
 
   rmap = solver->remap;
-  core = solver->core;
+  egraph = solver->egraph;
 
   for (i=0; i<n; i++) {
     s1 = m1[i];
@@ -7782,8 +7780,8 @@ static bool bv_solver_var_equal_in_model(bv_solver_t *solver, thvar_t x1, thvar_
     l1 = remap_table_find(rmap, s1);
     l2 = remap_table_find(rmap, s2);
     assert(l1 != null_literal && l2 != null_literal);
-    v1 = literal_value(core, l1);
-    v2 = literal_value(core, l2);
+    v1 = egraph_literal_value(egraph, l1);
+    v2 = egraph_literal_value(egraph, l2);
     assert(bval_is_def(v1) && bval_is_def(v2));
     if (v1 != v2) {
       return false;
@@ -7802,7 +7800,7 @@ static bool bv_solver_var_equal_in_model(bv_solver_t *solver, thvar_t x1, thvar_
 static uint32_t bvsolver_word_value_in_model(bv_solver_t *solver, thvar_t x, uint32_t k) {
   bv_vartable_t *vtbl;
   remap_table_t *rmap;
-  smt_core_t *core;
+  egraph_t *egraph;
   literal_t *mx;
   literal_t s, l;
   uint32_t i, n, c;
@@ -7811,7 +7809,7 @@ static uint32_t bvsolver_word_value_in_model(bv_solver_t *solver, thvar_t x, uin
 
   vtbl = &solver->vtbl;
   rmap = solver->remap;
-  core = solver->core;
+  egraph = solver->egraph;
 
   n = bvvar_bitsize(vtbl, x);
   mx = bvvar_get_map(vtbl, x);
@@ -7826,8 +7824,8 @@ static uint32_t bvsolver_word_value_in_model(bv_solver_t *solver, thvar_t x, uin
   for (i=k; i<n; i++) {
     s = mx[i];
     l = remap_table_find(rmap, s);
-    assert(l != null_literal && literal_is_assigned(core, l));
-    if (literal_value(core, l) == VAL_TRUE) {
+    assert(l != null_literal && egraph_literal_is_assigned(egraph, l));
+    if (egraph_literal_value(egraph, l) == VAL_TRUE) {
       c |= 1; // set low-order bit
     }
     c <<= 1;
@@ -7963,8 +7961,8 @@ static bool interface_eq_in_class(bv_solver_t *solver, int32_t *v) {
   l = on_the_fly_eq_atom(solver, x1, x2);
 
   // add two clauses: (l => eq) and (eq => l)
-  add_binary_clause(solver->core, not(l), eq);
-  add_binary_clause(solver->core, l, not(eq));
+  egraph_add_binary_clause(solver->egraph, not(l), eq);
+  egraph_add_binary_clause(solver->egraph, l, not(eq));
 
 #if 0
   printf("---> BVSOLVER: interface_eq lemma for ");
@@ -8066,9 +8064,9 @@ static void bv_solver_prepare_model(bv_solver_t *solver) {
   free_bool_vars_t fv;
   uint32_t i, n, frees;
 
-  n = solver->core->nvars;
+  n = egraph_num_boolean_vars(solver->egraph);
   init_free_bool_vars(&fv, n);
-  collect_free_bool_vars(&fv, solver->core);
+  egraph_collect_free_bool_vars(solver->egraph, &fv);
 
   frees = 0;
   for (i=0; i<n; i++) {
@@ -8105,9 +8103,9 @@ static void bv_solver_gen_interface_lemma(bv_solver_t *solver, literal_t l, thva
 #endif
 
   eq = on_the_fly_eq_atom(solver, x1, x2);
-  add_binary_clause(solver->core, not(l), not(eq));  // l => not eq
+  egraph_add_binary_clause(solver->egraph, not(l), not(eq));  // l => not eq
   if (equiv) {
-    add_binary_clause(solver->core, l, eq);   // not l => eq
+    egraph_add_binary_clause(solver->egraph, l, eq);   // not l => eq
   }
 
   solver->stats.interface_lemmas ++;
@@ -8222,7 +8220,7 @@ static bool get_bitblasted_var_value(bv_solver_t *solver, thvar_t x, uint32_t *c
     l = remap_table_find(rmap, s);
     if (l == null_literal) return false;
 
-    switch (literal_value(solver->core, l)) {
+    switch (egraph_literal_value(solver->egraph, l)) {
     case VAL_FALSE:
       bvconst_clr_bit(c, i);
       break;
@@ -8252,7 +8250,7 @@ static bool get_bvarray_value(bv_solver_t *solver, literal_t *a, uint32_t n, uin
   uint32_t i;
 
   for (i=0; i<n; i++) {
-    switch (literal_value(solver->core, a[i])) {
+    switch (egraph_literal_value(solver->egraph, a[i])) {
     case VAL_FALSE:
       bvconst_clr_bit(c, i);
       break;
@@ -8908,7 +8906,7 @@ static void bv_solver_dump_state(bv_solver_t *solver, const char *filename) {
       print_gate_table(f, solver->blaster->htbl);
     }
     fprintf(f, "\n--- Clauses ---\n");
-    print_clauses(f, solver->core);
+    egraph_print_clauses(f, solver->egraph);
     fprintf(f, "\n");
     fclose(f);
   }

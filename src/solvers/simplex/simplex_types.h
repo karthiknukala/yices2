@@ -136,7 +136,6 @@
 
 #include "context/context_types.h"
 #include "solvers/cdcl/gates_manager.h"
-#include "solvers/cdcl/smt_core.h"
 #include "solvers/egraph/diseq_stacks.h"
 #include "solvers/egraph/egraph.h"
 #include "solvers/egraph/egraph_assertion_queues.h"
@@ -667,10 +666,8 @@ typedef struct simplex_stats_s {
 
 typedef struct simplex_solver_s {
   /*
-   * Attached smt core + gate manager + egraph
-   * (egraph may be NULL)
+   * Attached gate manager + central egraph kernel
    */
-  smt_core_t *core;
   gate_manager_t *gate_manager;
   egraph_t *egraph;
 
