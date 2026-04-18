@@ -17,9 +17,12 @@
  */
 
 /*
+ * Unlocked/internal versions of delicate yices_api.c calls (implemented in
+ * yices_api.c).
  *
- * Lock free versions of the delicate yices_api.c calls, (implemented in yices_api.c)
- * The prefix _o_ is intended to mean that the global lock must be OWNED by the caller.
+ * Historically the `_o_` prefix meant the caller already owned Yices' global
+ * mutex. That lock-based thread-safety layer has been removed; `_o_` now just
+ * marks internal entry points that bypass the public wrapper layer.
  */
 
 #ifndef ___O_YICES_API_H

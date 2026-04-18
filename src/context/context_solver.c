@@ -43,9 +43,7 @@
 #include "utils/int_hash_map.h"
 #include "utils/int_hash_sets.h"
 
-#include "api/yices_globals.h"
 #include "api/yices_api_lock_free.h"
-#include "mt/thread_macros.h"
 
 
 
@@ -560,7 +558,7 @@ static smt_status_t _o_call_mcsat_solver(context_t *ctx, const param_t *params) 
 }
 
 static smt_status_t call_mcsat_solver(context_t *ctx, const param_t *params) {
-  MT_PROTECT(smt_status_t, __yices_globals.lock, _o_call_mcsat_solver(ctx, params));
+  return _o_call_mcsat_solver(ctx, params);
 }
 
 /*
@@ -718,7 +716,6 @@ static void cache_unsat_core(context_t *ctx, const ivector_t *core) {
 
 /*
  * MCSAT variant of check_context_with_term_assumptions.
- * Caller must hold __yices_globals.lock.
  */
 static smt_status_t _o_check_context_with_term_assumptions_mcsat(context_t *ctx, const param_t *params, uint32_t n, const term_t *a, int32_t *error) {
   smt_status_t stat;
@@ -810,7 +807,7 @@ static smt_status_t _o_check_context_with_term_assumptions_mcsat(context_t *ctx,
 }
 
 static smt_status_t check_context_with_term_assumptions_mcsat(context_t *ctx, const param_t *params, uint32_t n, const term_t *a, int32_t *error) {
-  MT_PROTECT(smt_status_t, __yices_globals.lock, _o_check_context_with_term_assumptions_mcsat(ctx, params, n, a, error));
+  return _o_check_context_with_term_assumptions_mcsat(ctx, params, n, a, error);
 }
 
 /*

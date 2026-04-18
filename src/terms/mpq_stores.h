@@ -27,8 +27,6 @@
 #include <string.h>
 #include <gmp.h>
 
-#include "mt/yices_locks.h"
-
 /* 
  * mpq_link is mpq together with a pointer to the "next" free mpq_link
  * needed to prevent "modifying the contents" of the mpq, as is done
@@ -65,9 +63,6 @@ struct mpq_bank_s {
  * - or by adding a new block.
  */
 typedef struct mpq_store_s {
-#ifdef THREAD_SAFE
-  yices_lock_t lock;        // a lock protecting the mpq_store
-#endif
   mpq_bank_t *bnk;          // first block in the bank list
   mpq_link_t *free_list;    // list of free mpq_links
   uint32_t free_index;      // index of last allocated mpq_link in first block

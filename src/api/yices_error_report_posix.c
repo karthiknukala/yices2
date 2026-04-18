@@ -22,15 +22,10 @@
 
 #include "yices.h"
 
-#include "mt/thread_macros.h"
-
 /*
  * Thread Local Errors
- *
- * THREAD_SAFE implies that we HAVE_TLS
- *
  */
-#ifdef THREAD_SAFE
+#if defined(__clang__) || defined(__GNUC__)
 #define YICES_THREAD_LOCAL __thread
 #else
 #define YICES_THREAD_LOCAL

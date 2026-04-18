@@ -33,8 +33,6 @@
 
 #include <gmp.h>
 
-#include "mt/yices_locks.h"
-#include "mt/thread_macros.h"
 #include "terms/rationals.h"
 #include "terms/mpq_stores.h"
 #include "utils/gcd.h"
@@ -47,9 +45,6 @@ static mpq_store_t  mpq_store;
 /*
  *  String buffer for parsing.
  */
-#ifdef THREAD_SAFE
-static yices_lock_t string_buffer_lock;
-#endif
 static char* string_buffer = NULL;
 static uint32_t string_buffer_length = 0;
 
@@ -63,15 +58,11 @@ static void division_by_zero(void) {
 
 
 /*
- * Initialize everything including the string lock
- * if we're in thread-safe mode.
+ * Initialize everything.
  */
 void init_rationals(void){
   init_mpq_aux();
   init_mpqstore(&mpq_store);
-#ifdef THREAD_SAFE
-  create_yices_lock(&string_buffer_lock);
-#endif
   string_buffer = NULL;
   string_buffer_length = 0;
 }
@@ -83,9 +74,6 @@ void init_rationals(void){
 void cleanup_rationals(void){
   cleanup_mpq_aux();
   delete_mpqstore(&mpq_store);
-#ifdef THREAD_SAFE
-  destroy_yices_lock(&string_buffer_lock);
-#endif
   safe_free(string_buffer);
 }
 
@@ -911,7 +899,7 @@ static int _o_q_set_from_float_string(rational_t *r, const char *s) {
 }
 
 int q_set_from_float_string(rational_t *r, const char *s) {
-  MT_PROTECT(int, string_buffer_lock, _o_q_set_from_float_string(r, s));
+  return _o_q_set_from_float_string(r, s);
 }
 
 

@@ -28,8 +28,6 @@
 #include "utils/memalloc.h"
 #include "terms/mpq_aux.h"
 #include "terms/mpq_stores.h"
-#include "mt/thread_macros.h"
-
 /*
  * Initialize s:
  */
@@ -40,10 +38,7 @@ static void _o_init_mpqstore(mpq_store_t *s) {
 }
 
 void init_mpqstore(mpq_store_t *s) {
-#ifdef THREAD_SAFE
-  create_yices_lock(&(s->lock));
-#endif
-  MT_PROTECT_VOID(s->lock, _o_init_mpqstore(s));
+  _o_init_mpqstore(s);
 }
 
 
@@ -83,7 +78,7 @@ static mpq_ptr _o_mpqstore_alloc(mpq_store_t *s) {
 }
 
 mpq_ptr mpqstore_alloc(mpq_store_t *s) {
-  MT_PROTECT(mpq_ptr , s->lock, _o_mpqstore_alloc(s));
+  return _o_mpqstore_alloc(s);
 }
 
 
@@ -114,10 +109,7 @@ static void _o_delete_mpqstore(mpq_store_t *s) {
 }
 
 void delete_mpqstore(mpq_store_t *s) {
-  MT_PROTECT_VOID(s->lock, _o_delete_mpqstore(s));
-#ifdef THREAD_SAFE
-  destroy_yices_lock(&(s->lock));
-#endif
+  _o_delete_mpqstore(s);
 }
 
 
@@ -136,6 +128,5 @@ static void _o_mpqstore_free(mpq_store_t *s, mpq_ptr mpq) {
 
 
 void mpqstore_free(mpq_store_t *s, mpq_ptr mpq) {
-  MT_PROTECT_VOID(s->lock, _o_mpqstore_free(s, mpq));
+  _o_mpqstore_free(s, mpq);
 }
-

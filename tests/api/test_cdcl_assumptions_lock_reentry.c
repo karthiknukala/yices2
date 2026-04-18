@@ -1,9 +1,9 @@
 /*
- * Regression test for lock reentry in CDCL(T) check-with-assumptions path.
+ * Regression test for lock reentry in the old CDCL(T) check-with-assumptions path.
  *
- * Under THREAD_SAFE pre-fix code, yices_check_context_with_assumptions held the
- * global lock, then CDCL(T) solving could reach egraph_final_check, which tried
- * to take the same global lock again.
+ * Before the global-lock layer was removed, yices_check_context_with_assumptions
+ * held the lock, then CDCL(T) solving could reach egraph_final_check, which tried
+ * to take that same lock again.
  */
 
 #include <stdio.h>

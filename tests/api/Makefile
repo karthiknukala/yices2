@@ -99,14 +99,9 @@ ifeq ($(ENABLE_MCSAT),yes)
 endif
 
 #
-# Whether we have thread safety
-# If so on Unix systems, we must add -pthread to CFLAGS
+# POSIX test binaries need pthread support.
 #
-PTRHEAD=
-ifeq ($(THREAD_SAFE),1)
-  CPPFLAGS += -DTHREAD_SAFE
-  PTHREAD= -pthread
-endif
+PTHREAD= -pthread
 
 
 #
@@ -432,4 +427,3 @@ $(static_bindir)/%$(EXEEXT): $(static_objdir)/%.o $(static_libyices)
 	@ echo "  STATIC_GMP = $(STATIC_GMP)"
 	@ echo "  STATIC_GMP_INCLUDE_DIR = $(STATIC_GMP_INCLUDE_DIR)"
 	@ echo
-

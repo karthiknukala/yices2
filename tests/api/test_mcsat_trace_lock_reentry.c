@@ -1,8 +1,8 @@
 /*
- * Regression test for MCSAT trace checks under THREAD_SAFE builds.
+ * Regression test for the old MCSAT trace lock reentry path.
  *
- * Before the lock-free trace-check fix, these traces could re-enter lock-taking
- * API calls while the global lock was already held by yices_check_context.
+ * Before the global-lock layer was removed, these traces could re-enter
+ * lock-taking API calls while yices_check_context already held the lock.
  * That caused deadlock.
  */
 

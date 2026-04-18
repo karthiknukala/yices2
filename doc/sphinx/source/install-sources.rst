@@ -21,7 +21,7 @@ You can choose between different compile-time features and optional components:
 2. Support for back-end Boolean SAT solvers (which can provide performance
    improvements on bit-vector problems).
 
-3. Build a thread-safe version of the Yices library.
+3. Build with the optional features needed by your solver configuration.
 
 The following build instructions are written for Ubuntu but they should work
 with minor adjustments on other Unix variants. For Windows, we recommand
@@ -302,33 +302,12 @@ After any of these ``configure`` commands, you can build Yices as usual:
 
 
 
-Thread-Safe Yices Library
+Legacy Thread-Safety Mode
 -------------------------
 
-By default, the Yices library is not re-entrant and should not be used in multithreaded applications.
-If you need a thread-safe version of the library, configure and build Yices as follows:
+The old ``--enable-thread-safety`` build mode has been removed. This tree no
+longer provides a coarse global-lock wrapper around the public API.
 
-.. code-block:: sh
-
-   ./configure --enable-thread-safety
-   make -j
-   sudo make install
-
-When configured in this way, the Yices library allows multiple threads
-to operate on separate contexts and models without causing race
-conditions. This is useful to call :c:func:`yices_check_context` on
-different contexts in parallel. API functions that create terms and
-types are automatically serialized by an internal locking mechanism.
-
-.. note::
-
-   It is not safe for distinct threads to operate on the same context
-   or model concurrently. It you want to do that, you have to implement
-   your own locking mechanism.
-
-
-.. note::
-
-   The ``--enable-thread-safety`` and ``--enable-mcsat`` options are
-   currently incompatible. It is not possible to build a Yices version
-   that is both thread-safe and support MCSAT.
+Parallel development is now centered on explicit shared-state support for MCSAT
+and related solver internals, not on a separately configured re-entrant API
+mode.

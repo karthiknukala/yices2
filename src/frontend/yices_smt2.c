@@ -144,8 +144,6 @@ static double ef_ematch_term_alpha;
 static int32_t ef_ematch_cnstr_mode;
 static int32_t ef_ematch_term_mode;
 
-static uint32_t nthreads;
-
 /****************************
  *  COMMAND-LINE ARGUMENTS  *
  ***************************/
@@ -194,10 +192,9 @@ typedef enum optid {
   ematch_term_alpha_opt,            // set ematch term learner learning rate
   ematch_cnstr_mode_opt,            // set cnstr mode in ematching
   ematch_term_mode_opt,             // set term mode in ematching
-  nthreads_opt,                     // number of threads
 } optid_t;
 
-#define NUM_OPTIONS (nthreads_opt+1)
+#define NUM_OPTIONS (ematch_term_mode_opt+1)
 
 /*
  * Option descriptors
@@ -246,7 +243,6 @@ static option_desc_t options[NUM_OPTIONS] = {
   { "ematch-term-alpha", '\0', MANDATORY_FLOAT, ematch_term_alpha_opt },
   { "ematch-cnstr-mode", '\0', MANDATORY_STRING, ematch_cnstr_mode_opt },
   { "ematch-term-mode", '\0', MANDATORY_STRING, ematch_term_mode_opt },
-  { "nthreads", 'n', MANDATORY_INT, nthreads_opt }
 };
 
 
@@ -287,8 +283,6 @@ static void print_help(const char *progname) {
          "    --mcsat                   Use the MCSat solver\n"
          "    --mcsat-help              Show the MCSat options\n"
          "    --ef-help                 Show the EF options\n"
-	 "    --nthreads=<number of threads>  Specify the number of threads (default = 0 = main thread only)\n"
-	 "    -n <number of threads>\n"
          "\n"
          "For bug reports and other information, please see http://yices.csl.sri.com/\n");
   fflush(stdout);
@@ -431,8 +425,6 @@ static void parse_command_line(int argc, char *argv[]) {
   ef_ematch_cnstr_mode = -1;
   ef_ematch_term_mode = -1;
 
-  nthreads = 0;
-
   init_cmdline_parser(&parser, options, NUM_OPTIONS, argv, argc);
 
   for (;;) {
@@ -490,17 +482,6 @@ static void parse_command_line(int argc, char *argv[]) {
         timeout = v;
         break;
 
-      case nthreads_opt:
-        v = elem.i_value;
-        if (v < 0) {
-          fprintf(stderr, "%s: the number of threads must be non-negative\n", parser.command_name);
-          print_usage(parser.command_name);
-          code = YICES_EXIT_USAGE;
-          goto exit;
-        }
-        nthreads = v;
-        break;
-	
       case incremental_opt:
         incremental = true;
         break;
@@ -1152,7 +1133,7 @@ int main(int argc, char *argv[]) {
   init_handlers();
 
   yices_init();
-  init_mt2(!incremental, timeout, nthreads, interactive);
+  init_smt2(!incremental, timeout, interactive);
   if (smt2_model_format) smt2_force_smt2_model_format();
   if (bvdecimal) smt2_force_bvdecimal_format();
   if (dimacsfile != NULL && delegate == NULL) smt2_export_to_dimacs(dimacsfile);

@@ -398,9 +398,6 @@ typedef struct smt2_globals_s {
   ctx_param_t ctx_parameters;  // preprocessing options
   param_t parameters;          // search options
 
-  // nthreads
-  uint32_t nthreads;           // default = 0 (single threaded)
-
   // timeout
   uint32_t timeout;           // default = 0 (no timeout); global timeout used for every check-sat
   timeout_t *to;              // initially NULL. Non-NULL once init_timeout is called
@@ -482,7 +479,6 @@ extern smt2_globals_t __smt2_globals;
  * - this is called after yices_init so all Yices internals are ready
  */
 extern void init_smt2(bool benchmark, uint32_t timeout, bool print_success);
-extern void init_mt2(bool benchmark, uint32_t timeout, uint32_t nthreads, bool print_success);
 
 /*
  * Enable the mcsat solver

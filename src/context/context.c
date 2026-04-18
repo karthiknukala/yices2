@@ -38,8 +38,6 @@
 #include "utils/memalloc.h"
 
 #include "mcsat/solver.h"
-#include "mt/thread_macros.h"
-
 #include "api/yices_globals.h"
 
 #define TRACE 0
@@ -6291,7 +6289,7 @@ int32_t quant_assert_formulas(context_t *ctx, uint32_t n, const term_t *f) {
 }
 
 int32_t assert_formulas(context_t *ctx, uint32_t n, const term_t *f) {
-  MT_PROTECT(int32_t, __yices_globals.lock, _o_assert_formulas(ctx, n, f));
+  return _o_assert_formulas(ctx, n, f);
 }
 
 
@@ -6315,7 +6313,7 @@ int32_t _o_assert_formula(context_t *ctx, term_t f) {
 }
 
 int32_t assert_formula(context_t *ctx, term_t f) {
-  MT_PROTECT(int32_t, __yices_globals.lock, _o_assert_formula(ctx, f));
+  return _o_assert_formula(ctx, f);
 }
 
 

@@ -163,7 +163,6 @@ core_src_c := \
 	model/projection.c \
 	model/term_to_val.c \
 	model/val_to_term.c \
-	mt/yices_locks.c \
 	parser_utils/lexer.c \
 	parser_utils/parser.c \
 	parser_utils/term_stack2.c \
@@ -469,14 +468,6 @@ extra_src_c := \
 
 
 #
-# Optional for libyices.a: support for launching threads
-# and testing multi-threaded code
-#
-extra_thread_src_c := \
-	mt/threads.c
-
-
-#
 # base: core + mcsat if MCSAT is enabled or core + fake mcsat
 #
 ifeq ($(ENABLE_MCSAT),yes)
@@ -489,9 +480,6 @@ endif
 # all sources: base + extra
 #
 src_c := $(base_src_c) $(extra_src_c)
-ifeq ($(THREAD_SAFE),1)
-src_c := $(src_c) $(extra_thread_src_c)
-endif
 
 #
 # additional source files for the binaries
@@ -637,17 +625,6 @@ ifeq ($(ENABLE_MCSAT),yes)
 endif
 
 #
-# Whether we have thread safety
-# If so on Unix systems, we must add -pthread to CFLAGS
-#
-PTRHEAD=
-ifeq ($(THREAD_SAFE),1)
-  CPPFLAGS += -DTHREAD_SAFE
-  PTHREAD= -pthread
-endif
-
-
-#
 # OS-dependent compilation flags + which dynamic libraries to build
 #    libyices_dynamic = dynamic library for make lib
 #    static_libyices_dynamic = dynamic library for make static-lib
@@ -691,11 +668,6 @@ ifeq ($(POSIXOS),darwin)
   #
   # Detect clang-disguised-as-gcc vs. GNU GCC
   #
-  ifeq ($(THREAD_SAFE),1)
-    ifeq ($(shell $(CC) -v 2>&1 | grep -c "clang version"), 1)
-       CFLAGS += -Qunused-arguments
-    endif
-  endif
 else
 ifeq ($(POSIXOS),sunos)
   PIC=-fPIC
@@ -764,14 +736,22 @@ CPPFLAGS := -I. -Iinclude $(CPPFLAGS)
 URCU_CFLAGS :=
 URCU_LIBS :=
 ifeq ($(ENABLE_MCSAT),yes)
-ifeq ($(THREAD_SAFE),1)
   URCU_CFLAGS := $(shell pkg-config --cflags liburcu-cds liburcu-memb 2>/dev/null)
   URCU_LIBS := $(shell pkg-config --libs liburcu-cds liburcu-memb 2>/dev/null)
   ifneq ($(strip $(URCU_LIBS)),)
     CPPFLAGS += -DHAVE_LIBURCU_SHARED_MCSAT -D_LGPL_SOURCE $(URCU_CFLAGS)
     LIBS += $(URCU_LIBS)
+    ifneq ($(POSIXOS),mingw)
+      ifneq ($(POSIXOS),cygwin)
+        CFLAGS += -pthread
+        ifeq ($(POSIXOS),darwin)
+          ifeq ($(shell $(CC) -v 2>&1 | grep -c "clang version"), 1)
+            CFLAGS += -Qunused-arguments
+          endif
+        endif
+      endif
+    endif
   endif
-endif
 endif
 
 #

@@ -26,8 +26,6 @@
 
 #include "utils/memalloc.h"
 #include "utils/object_stores.h"
-#include "mt/thread_macros.h"
-
 #ifndef NDEBUG
 
 /*
@@ -76,10 +74,7 @@ static void _o_init_objstore(object_store_t *s, uint32_t objsize, uint32_t n) {
 }
 
 void init_objstore(object_store_t *s, uint32_t objsize, uint32_t n) {
-#ifdef THREAD_SAFE
-  create_yices_lock(&(s->lock));
-#endif
-  MT_PROTECT_VOID(s->lock, _o_init_objstore(s, objsize, n));
+  _o_init_objstore(s, objsize, n);
 }
 
 
@@ -124,7 +119,7 @@ static void *_o_objstore_alloc(object_store_t *s) {
 }
 
 void *objstore_alloc(object_store_t *s) {
-  MT_PROTECT(void *, s->lock, _o_objstore_alloc(s));
+  return _o_objstore_alloc(s);
 }
 
 
@@ -147,10 +142,7 @@ static void _o_delete_objstore(object_store_t *s) {
 }
 
 void delete_objstore(object_store_t *s) {
-  MT_PROTECT_VOID(s->lock, _o_delete_objstore(s));
-#ifdef THREAD_SAFE
-  destroy_yices_lock(&(s->lock));
-#endif
+  _o_delete_objstore(s);
 }
 
 /*
@@ -168,7 +160,7 @@ static void _o_objstore_free(object_store_t *s, void *object) {
   s->free_list = object;
 }
 void objstore_free(object_store_t *s, void *object) {
-  MT_PROTECT_VOID(s->lock, _o_objstore_free(s, object));
+  _o_objstore_free(s, object);
 }
 
 /*
@@ -197,10 +189,7 @@ static void _o_objstore_delete_finalize(object_store_t *s, void (*f)(void *)) {
   s->free_index = 0;
 }
 void objstore_delete_finalize(object_store_t *s, void (*f)(void *)) {
-  MT_PROTECT_VOID(s->lock, _o_objstore_delete_finalize(s, f));
-#ifdef THREAD_SAFE
-  destroy_yices_lock(&(s->lock));
-#endif
+  _o_objstore_delete_finalize(s, f);
 }
 
 
@@ -226,5 +215,5 @@ static void _o_reset_objstore(object_store_t *s) {
   s->free_index = 0;
 }
 void reset_objstore(object_store_t *s) {
-  MT_PROTECT_VOID(s->lock, _o_reset_objstore(s));
+  _o_reset_objstore(s);
 }

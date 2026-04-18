@@ -89,11 +89,6 @@ sed '
   # these look dead
   /^solvers\/egraph\/egraph_printer name$/d
   /^solvers\/egraph\/egraph_printer name_size$/d
-
-  # constant
-  /^mt\/yices_locks mattr$/d
-
-
   /^io\/yices_pp nonstandard_block/d
   /^io\/yices_pp standard_block/d
 
@@ -101,12 +96,10 @@ sed '
   /^parser_utils\/term_stack2 eval/d
   /^io\/yices_pp open_desc/d
 
-  #handled by the global lock
+  # configured via the API/runtime setup path
   /^utils\/memalloc __out_of_mem_callback/d
 
   #not used by the API(???)
-  /^utils\/timeout saved_handler/d
-  /^utils\/timeout the_timeout/d
 
 
   /^terms\/neorationals string_buffer$/d

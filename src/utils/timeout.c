@@ -22,24 +22,8 @@
 
 /*
  * Two implementations:
- * one for UNIX (Linux/Darwin/Cygwin)
- * one for Windows (MinGW).
- *
- * NOTES:
- * signal has different behavior on different Unix versions.
- * Here's what the manpage says (on Linux).
- *
- * The original Unix signal() would  reset the handler to SIG_DFL, and
- * System V (and the Linux kernel  and libc4,5) does the same.  On the
- * other  hand,  BSD  does  not  reset the  handler,  but  blocks  new
- * instances  of this  signal  from  occurring during  a  call of  the
- * handler.  The glibc2 library follows the BSD behavior.
- *
- * Testing results:
- * - on solaris 5.10, the signal handler is reset to SIG_DFL before
- *   the handler is called. So we must restore the handler every time.
- * - on Linux/Darwin/Cygwin: the signal handler is not changed.
- *
+ * - POSIX systems use a dedicated timer thread
+ * - Windows uses the timer queue API
  */
 
 #include <assert.h>
@@ -50,7 +34,7 @@
 #endif
 
 #include <windows.h>
-#elif defined(THREAD_SAFE)
+#else
 #include <pthread.h>
 #include <sys/time.h>
 #endif
@@ -86,23 +70,13 @@ typedef struct timeout_s {
 #ifdef MINGW
   HANDLE timer_queue;
   HANDLE timer;
-#elif defined(THREAD_SAFE)
+#else
   struct timespec ts;
   pthread_t thread;
   pthread_mutex_t mutex;
   pthread_cond_t cond;
 #endif
 } timeout_t;
-
-
-#if !defined(MINGW) && !defined(THREAD_SAFE)
-
-/*
- * Global structure for single-threaded case.
- */
-static timeout_t the_timeout;
-
-#endif
 
 /* Initialize the timeout fields common to all implementations. */
 
@@ -120,14 +94,15 @@ static inline void init_base_timeout(timeout_t *timeout) {
  ****************************/
 
 #include <unistd.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/errno.h>
 
-#ifdef THREAD_SAFE
-
-#include "mt/threads.h"
+static inline void check_thread_api(int expr, const char *msg) {
+  if (expr) {
+    perror_fatal_code(msg, expr);
+  }
+}
 
 timeout_t *init_timeout(void) {
   timeout_t *timeout;
@@ -223,112 +198,6 @@ void clear_timeout(timeout_t *timeout) {
 
   timeout->state = TIMEOUT_READY;
 }
-
-#else /* !defined(THREAD_SAFE) */
-
-/*
- * To save the original SIG_ALRM handler
- */
-static void (*saved_handler)(int);
-
-
-/*
- * SIG_ALRM handler:
- * - do nothing if the timeout is not active
- * - otherwise, change the state to fired
- *   then call the handler
- */
-static void alarm_handler(int signum) {
-  if (the_timeout.state == TIMEOUT_ACTIVE) {
-    the_timeout.state = TIMEOUT_FIRED;
-    the_timeout.handler(the_timeout.param);
-  }
-}
-
-
-/*
- * Initialization:
- * - install the alarm_handler (except on Solaris)
- * - initialize state to READY
- */
-timeout_t *init_timeout(void) {
-#ifndef SOLARIS
-  saved_handler = signal(SIGALRM, alarm_handler);
-  if (saved_handler == SIG_ERR) {
-    perror("Yices: failed to install SIG_ALRM handler: ");
-    exit(YICES_EXIT_INTERNAL_ERROR);
-  }
-#endif
-
-  init_base_timeout(&the_timeout);
-
-  return &the_timeout;
-}
-
-
-
-/*
- * Activate the timer
- * - delay = timeout in seconds (must be positive)
- * - handler = the handler to call
- * - param = data passed to the handler
- *
- * On Solaris: set the signal handler here.
- */
-void start_timeout(timeout_t *timeout, uint32_t delay, timeout_handler_t handler, void *param) {
-  assert(timeout == &the_timeout);
-  assert(delay > 0 && the_timeout.state == TIMEOUT_READY && handler != NULL);
-  the_timeout.state = TIMEOUT_ACTIVE;
-  the_timeout.handler = handler;
-  the_timeout.param = param;
-
-#ifdef SOLARIS
-  saved_handler = signal(SIGALRM, alarm_handler);
-  if (saved_handler == SIG_ERR) {
-    perror("Yices: failed to install SIG_ALRM handler: ");
-    exit(YICES_EXIT_INTERNAL_ERROR);
-  }
-#endif
-
-  (void) alarm(delay);
-}
-
-
-
-/*
- * Clear timeout:
- * - cancel the timeout if it's not fired
- * - set state to READY
- */
-void clear_timeout(timeout_t *timeout) {
-  assert(timeout == &the_timeout);
-  
-  // TODO: Check whether we should block the signals here?
-  if (the_timeout.state == TIMEOUT_ACTIVE) {
-    // not fired;
-    the_timeout.state = TIMEOUT_CANCELED;
-    (void) alarm(0); // cancel the alarm
-  }
-  the_timeout.state = TIMEOUT_READY;
-}
-
-
-/*
- * Final cleanup:
- * - cancel the timeout if it's active
- * - restore the original handler
- */
-void delete_timeout(timeout_t *timeout) {
-  assert(timeout == &the_timeout);
-  
-  if (the_timeout.state == TIMEOUT_ACTIVE) {
-    (void) alarm(0);
-  }
-  (void) signal(SIGALRM, saved_handler);
-  the_timeout.state = TIMEOUT_NOT_READY;
-}
-
-#endif /* defined(THREAD_SAFE) */
 
 #else
 

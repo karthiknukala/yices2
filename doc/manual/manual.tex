@@ -183,8 +183,8 @@ You can also install the library and development files as follows:
 The source distribution must be used for operating systems not listed
 in Table~\ref{versions} (or for old versions of Linux or Mac~OS~X). It
 is also useful if you desire to compile Yices with debugging
-information, if you want to link Yices with your own version of the
-GMP library, or if your want to build a thread-safe safe version.
+information, or if you want to link Yices with your own version of the
+GMP library.
 The source is available as a tarfile at
 \url{https://yices.csl.sri.com} and on our git repository at
 \url{https://github.com/SRI-CSL/yices2}.
@@ -194,7 +194,6 @@ Several optional features can be selected at compilation time:
 \begin{itemize}
 \item MCSAT solver (required for non-linear arithmetic)
 \item Support for third-party backend SAT solvers
-\item Support for a thread-safe API.
 \end{itemize}
 Instructions for building Yices with these different features are given in Chapter~\ref{compilation}.
 
@@ -793,23 +792,11 @@ If you want only Kissat, use this command:
 Compilation with these backend SAT solver is compatible with MCSAT, so
 you add option \texttt{--enable-mcsat} to any of these configure commands.
 
-\section{Thread-Safe API}
+\section{Legacy Thread-Safety API}
 
-By default, the Yices library is not re-entrant and it cannot be used
-in multi-threaded applications. If you need a re-entrant version of
-the library, you can configure and build Yices as follows:
-\begin{small}
-\begin{lstlisting}[language=sh]
-  ./configure --enable-thread-safety
-  make
-  sudo make install
-\end{lstlisting}
-\end{small}
-When configured in this fashion, the Yices library will allow multiple
-threads to manipulate separate contexts and models without causing race
-conditions (see Chapter~\ref{yices-api}). Sharing of contexts or
-models across several threads is not supported (unless you implement
-your own locking mechanism).
+The old global-lock thread-safety build mode has been removed from this
+tree. The compatibility function \verb+yices_is_thread_safe()+ remains,
+but it always reports that the legacy mode is disabled.
 
 
 \section{Building for Windows}

@@ -232,23 +232,11 @@ sudo make install
   `./configure --help` to see what's there.
 
 
-#### Support for Thread Safety
+#### Parallel Solver Work
 
-The Yices library is not thread safe by default, if you need a re-entrant version:
-```
-autoconf
-./configure --enable-thread-safety
-make
-sudo make install
-```
-
-If configured with `--enable-thread-safety` the Yices library will be thread
-safe in the following sense: as long as the creation and manipulation of
-each context and each model is restricted to a single thread, there should be no races.
-In particular separate threads can create their own contexts, and manipulate and check
-them without impeding another thread's progress.
-
-NOTE: `--enable-mcsat` and `--enable-thread-safety` are currently incompatible.
+The legacy global-lock "thread-safe" build mode has been removed from this tree.
+Current parallel work is focused on shared-state MCSAT infrastructure rather than
+serializing the public API behind a coarse global mutex.
 
 #### Windows Builds
 

@@ -39,7 +39,6 @@
 #include "api/smt_logic_codes.h"
 #include "api/yices_extensions.h"
 #include "api/yices_globals.h"
-#include "api/yices_mutex.h"
 #include "context/context.h"
 #include "frontend/common/bug_report.h"
 #include "frontend/common/parameters.h"
@@ -71,10 +70,6 @@
 #include "utils/cputime.h"
 #include "utils/memsize.h"
 
-
-//for ian's threading hacks
-#include "mt/threads.h"
-#include "mt/thread_macros.h"
 
 /*
  * DUMP CONTEXT: FOR TESTING/DEBUGGING
@@ -2650,16 +2645,7 @@ static void init_search_parameters(smt2_globals_t *g) {
  * - data = pointer to the smt2_global structure
  */
 static void timeout_handler(void *data) {
-  smt2_globals_t *g;
-
-#ifndef THREAD_SAFE
-  assert(data == &__smt2_globals);
-#else
-  /* In the multi-threaded case there are multiple copies of the
-     global data. */
-#endif /* THREAD_SAFE */
-  
-  g = data;
+  smt2_globals_t *g = data;
   if (g->efmode && g->ef_client.efsolver != NULL && g->ef_client.efsolver->status == EF_STATUS_SEARCHING) {
     ef_solver_stop_search(g->ef_client.efsolver);
   } else if (g->ctx != NULL && context_status(g->ctx) == YICES_STATUS_SEARCHING) {
@@ -3047,7 +3033,7 @@ static bool _o_has_uf(term_t *a, uint32_t n) {
   return result;
 }
 static bool has_uf(term_t *a, uint32_t n) {
-  MT_PROTECT(bool, __yices_globals.lock, _o_has_uf(a, n));
+  return _o_has_uf(a, n);
 }
 
 /*
@@ -4672,7 +4658,6 @@ static void init_smt2_globals(smt2_globals_t *g) {
   init_ctx_params(&g->ctx_parameters);
   init_params_to_defaults(&g->parameters);
   g->dump_models = false;
-  g->nthreads = 0;
   g->timeout = 0;
   g->to = NULL;
   g->interrupted = false;
@@ -4809,14 +4794,6 @@ void init_smt2(bool benchmark, uint32_t timeout, bool print_success) {
   __smt2_globals.print_success = print_success;
   check_stack(&__smt2_globals);
 }
-
-void init_mt2(bool benchmark, uint32_t timeout, uint32_t nthreads, bool print_success){
-  init_smt2(benchmark, timeout, print_success);
-  __smt2_globals.nthreads = nthreads;
-  //fprintf(stderr, "nthreads = %"PRIu32"\n", nthreads);
-}
-
-
 
 /*
  * Force verbosity level to k
@@ -6724,84 +6701,6 @@ void smt2_assert(term_t t, bool special) {
   }
 }
 
-
-
-#ifdef THREAD_SAFE
-
-/*
- * PROVISIONAL CODE FOR TESTING MULTIPLE SOLVERS & CONTEXTS
- * IN SEPARATE THREADS
- */
-
-static yices_thread_result_t YICES_THREAD_ATTR check_delayed_assertions_thread(void* arg){
-  thread_data_t* tdata = (thread_data_t *)arg;
-  FILE* output = tdata->output;
-  smt2_globals_t *g = (smt2_globals_t *)tdata->extra;
-
-  g->out = output;   // /tmp/check_delayed_assertions_thread_<thread index>.txt
-  g->err = output;   // /tmp/check_delayed_assertions_thread_<thread index>.txt
-
-  check_delayed_assertions(g, /*report=*/false);
-
-  return yices_thread_exit();
-}
-
-static smt_status_t get_status_from_globals(smt2_globals_t *g) {
-  if (g->trivially_unsat) {
-    return YICES_STATUS_UNSAT;
-  } else if (g->trivially_sat) {
-    return YICES_STATUS_SAT;
-  } else {
-    assert(g->ctx);
-    return yices_context_status(g->ctx);
-  }
-}
-
-/*
- * Test multi-threaded code:
- * - g->nthreads = number of threads to run
- */
-static void check_delayed_assertions_mt(smt2_globals_t *g) {
-  bool success;
-  uint32_t i, n;
-  bool verbose;
-
-  n = g->nthreads;
-  assert(n > 0);
-
-  verbose = g->verbosity > 0;
-    
-  smt2_globals_t *garray =  (smt2_globals_t *) safe_malloc(n * sizeof(smt2_globals_t));
-  for(i = 0; i < n; i++) {
-    garray[i] = __smt2_globals;  // just copy them for now.
-    garray[i].tracer = NULL;     // only main thread can use this.
-  }
-  launch_threads(n, garray, sizeof(smt2_globals_t), "check_delayed_assertions_thread", check_delayed_assertions_thread, verbose);
-  if (verbose)
-    fprintf(stderr, "All threads finished. Now computing check_delayed_assertions in main thread.\n");
-  check_delayed_assertions(g, /*report=*/true);
-
-  //could check that they are all OK
-
-  smt_status_t main_answer = get_status_from_globals(g);
-  success = true;
-  for (i = 0; i < n; i++) {
-    smt_status_t answer = get_status_from_globals(garray + i);
-    if (answer != main_answer) {
-      success = false;
-    }
-    //free the model if there is one, and free the context.
-    //IAM: valgrind says there is no leak here. This is puzzling.
-  }
-  if (verbose)
-    fprintf(stderr,
-	    success ? "SUCCESS: All threads agree.\n" : "FAILURE: Threads disagree.\n");
-  safe_free(garray);
-}
-#endif
-
-
-
 /*
  * Check satisfiability of the current set of assertions
  */
@@ -6822,16 +6721,7 @@ void smt2_check_sat(void) {
       } else if (__smt2_globals.produce_unsat_cores) {
         delayed_assertions_unsat_core(&__smt2_globals);
       } else {
-        // show_delayed_assertions(&__smt2_globals);
-#ifndef THREAD_SAFE
         check_delayed_assertions(&__smt2_globals, /*report=*/true);
-#else
-        if (__smt2_globals.nthreads == 0) {
-          check_delayed_assertions(&__smt2_globals, /*report=*/true);
-        } else {
-          check_delayed_assertions_mt(&__smt2_globals);
-        }
-#endif
       }
     } else {
       /*

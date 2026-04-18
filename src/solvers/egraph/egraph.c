@@ -38,8 +38,6 @@
 #include "utils/ptr_partitions.h"
 
 #include "api/yices_globals.h"
-#include "mt/thread_macros.h"
-
 #define TRACE 0
 #define TRACE_FCHECK 0
 
@@ -6324,7 +6322,7 @@ fcheck_code_t _o_egraph_final_check(egraph_t *egraph) {
 }
 
 fcheck_code_t egraph_final_check(egraph_t *egraph) {
-  MT_PROTECT(fcheck_code_t, __yices_globals.lock, _o_egraph_final_check(egraph));
+  return _o_egraph_final_check(egraph);
 }
 
 
