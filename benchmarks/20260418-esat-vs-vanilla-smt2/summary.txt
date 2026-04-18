@@ -1,0 +1,10 @@
+solver_a=esat-2007
+solver_b=vanilla-yices2
+benchmarks_total=916
+common_passes=916
+mismatches_or_failures=0
+esat-2007_wins=439
+vanilla-yices2_wins=477
+ties=0
+esat-2007_total_seconds=57.426213
+vanilla-yices2_total_seconds=27.572454
