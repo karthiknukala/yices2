@@ -38,6 +38,14 @@ bool mcsat_shared_state_is_enabled(const mcsat_shared_state_t* state) {
   return state != NULL;
 }
 
+void mcsat_shared_state_term_lock(mcsat_shared_state_t* state) {
+  (void) state;
+}
+
+void mcsat_shared_state_term_unlock(mcsat_shared_state_t* state) {
+  (void) state;
+}
+
 void mcsat_shared_state_publish_term(mcsat_shared_state_t* state, term_t term) {
   (void) state;
   (void) term;
@@ -69,8 +77,14 @@ uint32_t mcsat_shared_state_variable_limit(mcsat_shared_state_t* state) {
   return 0;
 }
 
-bool mcsat_shared_state_publish_lemma(mcsat_shared_state_t* state, term_t lemma, uint64_t* seq_out) {
+uint64_t mcsat_shared_state_new_lemma_session(mcsat_shared_state_t* state) {
   (void) state;
+  return 0;
+}
+
+bool mcsat_shared_state_publish_lemma(mcsat_shared_state_t* state, uint64_t session, term_t lemma, uint64_t* seq_out) {
+  (void) state;
+  (void) session;
   (void) lemma;
   if (seq_out != NULL) {
     *seq_out = 0;
@@ -83,8 +97,9 @@ uint64_t mcsat_shared_state_latest_lemma_seq(mcsat_shared_state_t* state) {
   return 0;
 }
 
-term_t mcsat_shared_state_get_lemma(mcsat_shared_state_t* state, uint64_t seq) {
+term_t mcsat_shared_state_get_lemma(mcsat_shared_state_t* state, uint64_t session, uint64_t seq) {
   (void) state;
+  (void) session;
   (void) seq;
   return NULL_TERM;
 }
@@ -121,15 +136,27 @@ typedef struct {
 
 typedef struct {
   term_t lemma;
+  uint64_t session;
   uint64_t seq;
   struct cds_lfht_node node;
 } shared_lemma_node_t;
+
+typedef struct {
+  term_t lemma;
+  uint64_t session;
+} shared_lemma_slot_t;
+
+typedef struct {
+  term_t lemma;
+  uint64_t session;
+} shared_lemma_key_t;
 
 struct mcsat_shared_state_s {
   term_table_t* terms;
   type_table_t* types;
 
   pthread_mutex_t storage_lock;
+  pthread_mutex_t term_lock;
   uint32_t refcount;
 
   struct cds_lfht* shared_terms;
@@ -145,6 +172,7 @@ struct mcsat_shared_state_s {
 
   volatile uint32_t next_variable_id;
   volatile uint32_t max_variable_id;
+  volatile uint64_t next_lemma_session;
   volatile uint64_t next_lemma_seq;
   volatile uint64_t max_lemma_seq;
 };
@@ -210,7 +238,8 @@ int shared_variable_match(struct cds_lfht_node* node, const void* key) {
 static
 int shared_lemma_match(struct cds_lfht_node* node, const void* key) {
   const shared_lemma_node_t* entry = cds_lfht_entry(node, const shared_lemma_node_t, node);
-  return entry->lemma == *(const term_t*) key;
+  const shared_lemma_key_t* lemma_key = (const shared_lemma_key_t*) key;
+  return entry->lemma == lemma_key->lemma && entry->session == lemma_key->session;
 }
 
 static
@@ -221,12 +250,14 @@ struct cds_lfht* shared_state_new_table(void) {
 static
 void shared_state_init(mcsat_shared_state_t* state, term_table_t* terms, type_table_t* types) {
   int32_t code;
+  pthread_mutexattr_t attr;
 
   state->terms = terms;
   state->types = types;
   state->refcount = 0;
   state->next_variable_id = 0;
   state->max_variable_id = 0;
+  state->next_lemma_session = 0;
   state->next_lemma_seq = 0;
   state->max_lemma_seq = 0;
 
@@ -234,6 +265,20 @@ void shared_state_init(mcsat_shared_state_t* state, term_table_t* terms, type_ta
   if (code != 0) {
     perror_fatal("pthread_mutex_init");
   }
+
+  code = pthread_mutexattr_init(&attr);
+  if (code != 0) {
+    perror_fatal("pthread_mutexattr_init");
+  }
+  code = pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+  if (code != 0) {
+    perror_fatal("pthread_mutexattr_settype");
+  }
+  code = pthread_mutex_init(&state->term_lock, &attr);
+  if (code != 0) {
+    perror_fatal("pthread_mutex_init");
+  }
+  pthread_mutexattr_destroy(&attr);
 
   init_pvector(&state->term_nodes, 0);
   init_pvector(&state->variable_nodes, 0);
@@ -251,6 +296,16 @@ void shared_state_init(mcsat_shared_state_t* state, term_table_t* terms, type_ta
 
 static
 void shared_state_free_term_chunks(pvector_t* chunks) {
+  uint32_t i;
+
+  for (i = 0; i < chunks->size; ++i) {
+    safe_free(chunks->data[i]);
+  }
+  delete_pvector(chunks);
+}
+
+static
+void shared_state_free_lemma_chunks(pvector_t* chunks) {
   uint32_t i;
 
   for (i = 0; i < chunks->size; ++i) {
@@ -290,8 +345,9 @@ void shared_state_destroy(mcsat_shared_state_t* state) {
   shared_state_free_nodes(&state->variable_nodes);
   shared_state_free_nodes(&state->lemma_nodes);
   shared_state_free_term_chunks(&state->variable_terms);
-  shared_state_free_term_chunks(&state->lemma_terms);
+  shared_state_free_lemma_chunks(&state->lemma_terms);
 
+  pthread_mutex_destroy(&state->term_lock);
   pthread_mutex_destroy(&state->storage_lock);
   safe_free(state);
 }
@@ -341,6 +397,24 @@ void shared_state_ensure_term_chunk(mcsat_shared_state_t* state, pvector_t* chun
   pthread_mutex_unlock(&state->storage_lock);
 }
 
+static
+void shared_state_ensure_lemma_chunk(mcsat_shared_state_t* state, pvector_t* chunks, uint64_t slot) {
+  uint64_t chunk_id;
+
+  chunk_id = (slot - 1) / MCSAT_SHARED_SLOT_CHUNK;
+  pthread_mutex_lock(&state->storage_lock);
+  while (chunks->size <= chunk_id) {
+    shared_lemma_slot_t* chunk = (shared_lemma_slot_t*) safe_malloc(MCSAT_SHARED_SLOT_CHUNK * sizeof(shared_lemma_slot_t));
+    uint32_t i;
+    for (i = 0; i < MCSAT_SHARED_SLOT_CHUNK; ++i) {
+      chunk[i].lemma = NULL_TERM;
+      chunk[i].session = 0;
+    }
+    pvector_push(chunks, chunk);
+  }
+  pthread_mutex_unlock(&state->storage_lock);
+}
+
 static inline
 term_t shared_state_load_term_slot(mcsat_shared_state_t* state, pvector_t* chunks, uint64_t slot) {
   uint64_t chunk_id;
@@ -364,6 +438,32 @@ term_t shared_state_load_term_slot(mcsat_shared_state_t* state, pvector_t* chunk
   return term;
 }
 
+static inline
+shared_lemma_slot_t shared_state_load_lemma_slot(mcsat_shared_state_t* state, pvector_t* chunks, uint64_t slot) {
+  uint64_t chunk_id;
+  shared_lemma_slot_t* chunk;
+  shared_lemma_slot_t lemma_slot;
+
+  lemma_slot.lemma = NULL_TERM;
+  lemma_slot.session = 0;
+
+  if (slot == 0) {
+    return lemma_slot;
+  }
+
+  chunk_id = (slot - 1) / MCSAT_SHARED_SLOT_CHUNK;
+  pthread_mutex_lock(&state->storage_lock);
+  if (chunk_id >= chunks->size) {
+    pthread_mutex_unlock(&state->storage_lock);
+    return lemma_slot;
+  }
+
+  chunk = (shared_lemma_slot_t*) chunks->data[chunk_id];
+  lemma_slot = chunk[(slot - 1) % MCSAT_SHARED_SLOT_CHUNK];
+  pthread_mutex_unlock(&state->storage_lock);
+  return lemma_slot;
+}
+
 static
 void shared_state_store_term_slot(mcsat_shared_state_t* state, pvector_t* chunks, uint64_t slot, term_t term) {
   term_t* chunk;
@@ -372,6 +472,19 @@ void shared_state_store_term_slot(mcsat_shared_state_t* state, pvector_t* chunks
   pthread_mutex_lock(&state->storage_lock);
   chunk = (term_t*) chunks->data[(slot - 1) / MCSAT_SHARED_SLOT_CHUNK];
   chunk[(slot - 1) % MCSAT_SHARED_SLOT_CHUNK] = term;
+  pthread_mutex_unlock(&state->storage_lock);
+  __sync_synchronize();
+}
+
+static
+void shared_state_store_lemma_slot(mcsat_shared_state_t* state, pvector_t* chunks, uint64_t slot, uint64_t session, term_t lemma) {
+  shared_lemma_slot_t* chunk;
+
+  shared_state_ensure_lemma_chunk(state, chunks, slot);
+  pthread_mutex_lock(&state->storage_lock);
+  chunk = (shared_lemma_slot_t*) chunks->data[(slot - 1) / MCSAT_SHARED_SLOT_CHUNK];
+  chunk[(slot - 1) % MCSAT_SHARED_SLOT_CHUNK].lemma = lemma;
+  chunk[(slot - 1) % MCSAT_SHARED_SLOT_CHUNK].session = session;
   pthread_mutex_unlock(&state->storage_lock);
   __sync_synchronize();
 }
@@ -386,6 +499,18 @@ term_t shared_state_wait_term_slot(mcsat_shared_state_t* state, pvector_t* chunk
     term = shared_state_load_term_slot(state, chunks, slot);
   }
   return term;
+}
+
+static
+shared_lemma_slot_t shared_state_wait_lemma_slot(mcsat_shared_state_t* state, pvector_t* chunks, uint64_t slot) {
+  shared_lemma_slot_t lemma_slot;
+
+  lemma_slot = shared_state_load_lemma_slot(state, chunks, slot);
+  while (lemma_slot.lemma == NULL_TERM) {
+    sched_yield();
+    lemma_slot = shared_state_load_lemma_slot(state, chunks, slot);
+  }
+  return lemma_slot;
 }
 
 static
@@ -440,6 +565,20 @@ void mcsat_shared_state_release(mcsat_shared_state_t* state) {
 
 bool mcsat_shared_state_is_enabled(const mcsat_shared_state_t* state) {
   return state != NULL;
+}
+
+void mcsat_shared_state_term_lock(mcsat_shared_state_t* state) {
+  if (state == NULL) {
+    return;
+  }
+  pthread_mutex_lock(&state->term_lock);
+}
+
+void mcsat_shared_state_term_unlock(mcsat_shared_state_t* state) {
+  if (state == NULL) {
+    return;
+  }
+  pthread_mutex_unlock(&state->term_lock);
 }
 
 void mcsat_shared_state_publish_term(mcsat_shared_state_t* state, term_t term) {
@@ -556,37 +695,52 @@ uint32_t mcsat_shared_state_variable_limit(mcsat_shared_state_t* state) {
   return state->max_variable_id;
 }
 
-bool mcsat_shared_state_publish_lemma(mcsat_shared_state_t* state, term_t lemma, uint64_t* seq_out) {
+uint64_t mcsat_shared_state_new_lemma_session(mcsat_shared_state_t* state) {
+  if (state == NULL) {
+    return 0;
+  }
+  shared_state_register_thread();
+  return __sync_add_and_fetch(&state->next_lemma_session, 1);
+}
+
+bool mcsat_shared_state_publish_lemma(mcsat_shared_state_t* state, uint64_t session, term_t lemma, uint64_t* seq_out) {
   shared_lemma_node_t* entry;
   struct cds_lfht_node* found;
   struct cds_lfht_node* node;
   shared_lemma_node_t* found_entry;
-  term_t key;
+  shared_lemma_key_t key;
+  shared_lemma_slot_t lemma_slot;
   uint64_t seq;
 
   if (seq_out != NULL) {
     *seq_out = 0;
   }
-  if (state == NULL || lemma == NULL_TERM) {
+  if (state == NULL || session == 0 || lemma == NULL_TERM) {
     return false;
   }
 
-  key = lemma;
+  key.lemma = lemma;
+  key.session = session;
   shared_state_register_thread();
-  mcsat_shared_state_publish_term(state, key);
+  mcsat_shared_state_publish_term(state, key.lemma);
 
   entry = (shared_lemma_node_t*) safe_malloc(sizeof(shared_lemma_node_t));
-  entry->lemma = key;
+  entry->lemma = key.lemma;
+  entry->session = key.session;
   entry->seq = __sync_add_and_fetch(&state->next_lemma_seq, 1);
   cds_lfht_node_init(&entry->node);
 
   urcu_memb_read_lock();
-  node = cds_lfht_add_unique(state->shared_lemmas, shared_hash_term(key), shared_lemma_match, &key, &entry->node);
+  node = cds_lfht_add_unique(state->shared_lemmas,
+                             jenkins_hash_mix2(shared_hash_term(key.lemma), jenkins_hash_uint64(key.session)),
+                             shared_lemma_match,
+                             &key,
+                             &entry->node);
   found = node;
   urcu_memb_read_unlock();
 
   if (found == &entry->node) {
-    shared_state_store_term_slot(state, &state->lemma_terms, entry->seq, key);
+    shared_state_store_lemma_slot(state, &state->lemma_terms, entry->seq, entry->session, entry->lemma);
     shared_state_update_u64_max(&state->max_lemma_seq, entry->seq);
     shared_state_record_node(state, &state->lemma_nodes, entry);
     if (seq_out != NULL) {
@@ -598,7 +752,10 @@ bool mcsat_shared_state_publish_lemma(mcsat_shared_state_t* state, term_t lemma,
   found_entry = cds_lfht_entry(found, shared_lemma_node_t, node);
   safe_free(entry);
   seq = found_entry->seq;
-  (void) shared_state_wait_term_slot(state, &state->lemma_terms, seq);
+  lemma_slot = shared_state_wait_lemma_slot(state, &state->lemma_terms, seq);
+  if (lemma_slot.session != found_entry->session) {
+    return false;
+  }
   if (seq_out != NULL) {
     *seq_out = seq;
   }
@@ -612,11 +769,17 @@ uint64_t mcsat_shared_state_latest_lemma_seq(mcsat_shared_state_t* state) {
   return state->max_lemma_seq;
 }
 
-term_t mcsat_shared_state_get_lemma(mcsat_shared_state_t* state, uint64_t seq) {
-  if (state == NULL || seq == 0 || seq > state->max_lemma_seq) {
+term_t mcsat_shared_state_get_lemma(mcsat_shared_state_t* state, uint64_t session, uint64_t seq) {
+  shared_lemma_slot_t lemma_slot;
+
+  if (state == NULL || session == 0 || seq == 0 || seq > state->max_lemma_seq) {
     return NULL_TERM;
   }
-  return shared_state_load_term_slot(state, &state->lemma_terms, seq);
+  lemma_slot = shared_state_load_lemma_slot(state, &state->lemma_terms, seq);
+  if (lemma_slot.session != session) {
+    return NULL_TERM;
+  }
+  return lemma_slot.lemma;
 }
 
 #endif

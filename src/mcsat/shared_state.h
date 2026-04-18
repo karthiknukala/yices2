@@ -31,6 +31,9 @@ mcsat_shared_state_t* mcsat_shared_state_acquire(term_table_t* terms, type_table
 void mcsat_shared_state_release(mcsat_shared_state_t* state);
 bool mcsat_shared_state_is_enabled(const mcsat_shared_state_t* state);
 
+void mcsat_shared_state_term_lock(mcsat_shared_state_t* state);
+void mcsat_shared_state_term_unlock(mcsat_shared_state_t* state);
+
 void mcsat_shared_state_publish_term(mcsat_shared_state_t* state, term_t term);
 
 int32_t mcsat_shared_state_lookup_variable(mcsat_shared_state_t* state, term_t term);
@@ -38,8 +41,9 @@ int32_t mcsat_shared_state_get_variable(mcsat_shared_state_t* state, term_t term
 term_t mcsat_shared_state_get_variable_term(mcsat_shared_state_t* state, int32_t var);
 uint32_t mcsat_shared_state_variable_limit(mcsat_shared_state_t* state);
 
-bool mcsat_shared_state_publish_lemma(mcsat_shared_state_t* state, term_t lemma, uint64_t* seq_out);
+uint64_t mcsat_shared_state_new_lemma_session(mcsat_shared_state_t* state);
+bool mcsat_shared_state_publish_lemma(mcsat_shared_state_t* state, uint64_t session, term_t lemma, uint64_t* seq_out);
 uint64_t mcsat_shared_state_latest_lemma_seq(mcsat_shared_state_t* state);
-term_t mcsat_shared_state_get_lemma(mcsat_shared_state_t* state, uint64_t seq);
+term_t mcsat_shared_state_get_lemma(mcsat_shared_state_t* state, uint64_t session, uint64_t seq);
 
 #endif /* MCSAT_SHARED_STATE_H_ */

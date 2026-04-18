@@ -5416,6 +5416,10 @@ static bool yices_get_option(smt2_globals_t *g, yices_param_t p) {
     print_int32_value(g->mcsat_options.bv_var_size);
     break;
 
+  case PARAM_MCSAT_PARALLEL_WORKERS:
+    print_int32_value(g->mcsat_options.parallel_workers);
+    break;
+
   case PARAM_MCSAT_PARTIAL_RESTART:
     print_boolean_value(g->mcsat_options.partial_restart);
     break;
@@ -6231,6 +6235,16 @@ static void yices_set_option(smt2_globals_t *g, const char *param, const param_v
       context = g->ctx;
       if (context != NULL) {
         ivector_copy(&context->mcsat_var_order, terms->data, terms->size);
+      }
+    }
+    break;
+
+  case PARAM_MCSAT_PARALLEL_WORKERS:
+    if (param_val_to_pos32(param, val, &n, &reason)) {
+      g->mcsat_options.parallel_workers = n;
+      context = g->ctx;
+      if (context != NULL) {
+        context->mcsat_options.parallel_workers = n;
       }
     }
     break;
