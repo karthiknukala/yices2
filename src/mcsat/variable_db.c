@@ -20,13 +20,16 @@
 
 #include "io/term_printer.h"
 #include "mcsat/tracing.h"
+#include "mcsat/shared_state.h"
 
 #include "api/yices_api_lock_free.h"
 
-void variable_db_construct(variable_db_t* var_db, term_table_t* terms, type_table_t* types, tracer_t* tracer) {
+void variable_db_construct(variable_db_t* var_db, term_table_t* terms, type_table_t* types, tracer_t* tracer, mcsat_shared_state_t* shared_state) {
   var_db->terms = terms;
   var_db->types = types;
   var_db->tracer = tracer;
+  var_db->shared_state = shared_state;
+  var_db->shared_notified_upto = variable_null;
 
   init_ivector(&var_db->variable_to_term_map, 0);
   init_int_hmap(&var_db->term_to_variable_map, 0);
@@ -46,6 +49,10 @@ void variable_db_destruct(variable_db_t* var_db) {
 }
 
 bool variable_db_has_variable(const variable_db_t* var_db, term_t x) {
+  if (var_db->shared_state != NULL) {
+    return mcsat_shared_state_lookup_variable(var_db->shared_state, x) != variable_null;
+  }
+
   assert(is_pos_term(x));
   int_hmap_pair_t* find;
   find = int_hmap_find((int_hmap_t*) &var_db->term_to_variable_map, x);
@@ -62,12 +69,33 @@ static void variable_db_notify_new_variable(variable_db_t* var_db, variable_t x)
   }
 }
 
+static
+void variable_db_sync_shared_to(variable_db_t* var_db, variable_t x) {
+  while (var_db->shared_notified_upto < x) {
+    term_t term;
+
+    var_db->shared_notified_upto ++;
+    term = mcsat_shared_state_get_variable_term(var_db->shared_state, var_db->shared_notified_upto);
+    if (term != NULL_TERM) {
+      variable_db_notify_new_variable(var_db, var_db->shared_notified_upto);
+    }
+  }
+}
+
 variable_t variable_db_get_variable(variable_db_t* var_db, term_t term) {
   int_hmap_pair_t* find;
   variable_t x;
 
   assert(is_pos_term(term));
   assert(good_term(var_db->terms, term));
+
+  if (var_db->shared_state != NULL) {
+    x = mcsat_shared_state_get_variable(var_db->shared_state, term, NULL);
+    if (x != variable_null) {
+      variable_db_sync_shared_to(var_db, x);
+    }
+    return x;
+  }
 
   find = int_hmap_find(&var_db->term_to_variable_map, term);
   if (find != NULL) {
@@ -122,6 +150,14 @@ variable_t variable_db_get_variable_if_exists(const variable_db_t* var_db, term_
 
   assert(is_pos_term(term));
 
+  if (var_db->shared_state != NULL) {
+    variable_t x = mcsat_shared_state_lookup_variable(var_db->shared_state, term);
+    if (x != variable_null) {
+      variable_db_sync_shared_to((variable_db_t*) var_db, x);
+    }
+    return x;
+  }
+
   find = int_hmap_find((int_hmap_t*) &var_db->term_to_variable_map, term);
   if (find != NULL) {
     return find->val;
@@ -135,8 +171,23 @@ void variable_db_add_new_variable_listener(variable_db_t* var_db, variable_db_ne
 }
 
 uint32_t variable_db_size(const variable_db_t* var_db) {
+  if (var_db->shared_state != NULL) {
+    return mcsat_shared_state_variable_limit(var_db->shared_state);
+  }
+
   // Deduct the freed ones and the null variable
   return var_db->variable_to_term_map.size - var_db->free_list.size - 1;
+}
+
+term_t variable_db_get_term_if_exists(const variable_db_t* var_db, variable_t x) {
+  if (var_db->shared_state != NULL) {
+    return mcsat_shared_state_get_variable_term(var_db->shared_state, x);
+  }
+
+  if (x <= 0 || x >= var_db->variable_to_term_map.size) {
+    return NULL_TERM;
+  }
+  return var_db->variable_to_term_map.data[x];
 }
 
 void variable_db_print_variable(const variable_db_t* var_db, variable_t x, FILE* out) {
@@ -161,8 +212,8 @@ void variable_db_print(const variable_db_t* var_db, FILE* out) {
   uint32_t i;
   term_t t;
 
-  for (i = 0; i < var_db->variable_to_term_map.size; ++ i) {
-    t = var_db->variable_to_term_map.data[i];
+  for (i = 0; i <= variable_db_size(var_db); ++ i) {
+    t = variable_db_get_term_if_exists(var_db, i);
     if (t != NULL_TERM) {
       fprintf(out, "%d [%d] : ", i, t);
       variable_db_print_variable(var_db, i, out);
@@ -209,6 +260,11 @@ type_kind_t variable_db_get_type_kind(const variable_db_t* var_db, variable_t x)
 void variable_db_gc_sweep(variable_db_t* var_db, gc_info_t* gc_vars) {
   uint32_t i, to_collect;
 
+  if (var_db->shared_state != NULL) {
+    gc_info_set_relocated(gc_vars);
+    return;
+  }
+
   // How many left to reclaim
   assert(variable_db_size(var_db) >= gc_vars->marked.size);
   to_collect = variable_db_size(var_db) - gc_vars->marked.size;
@@ -231,6 +287,8 @@ void variable_db_set_tracer(variable_db_t* var_db, tracer_t* tracer) {
 }
 
 bool variable_db_is_variable(const variable_db_t* var_db, variable_t var, bool assert) {
+  term_t var_term;
+
   if (var == variable_null) {
     assert(!assert);
     return false;
@@ -239,11 +297,11 @@ bool variable_db_is_variable(const variable_db_t* var_db, variable_t var, bool a
     assert(!assert);
     return false;
   }
-  if (var >= var_db->variable_to_term_map.size) {
+  if (var > variable_db_size(var_db)) {
     assert(!assert);
     return false;
   }
-  term_t var_term = var_db->variable_to_term_map.data[var];
+  var_term = variable_db_get_term_if_exists(var_db, var);
   if (var_term == NULL_TERM) {
     assert(!assert);
     return false;

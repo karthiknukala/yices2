@@ -35,6 +35,7 @@
 #include "mcsat/trail.h"
 #include "mcsat/conflict.h"
 #include "mcsat/plugin.h"
+#include "mcsat/shared_state.h"
 #include "mcsat/tracing.h"
 
 #include "utils/int_queues.h"
@@ -152,6 +153,9 @@ struct mcsat_solver_s {
   /** Variable database */
   variable_db_t* var_db;
 
+  /** Shared parallel state */
+  mcsat_shared_state_t* shared_state;
+
   /** List of assertions (positive variables) asserted to true. */
   ivector_t assertion_vars;
 
@@ -228,6 +232,9 @@ struct mcsat_solver_s {
 
   /** Last processed definition lemma */
   uint32_t plugin_definition_lemmas_i;
+
+  /** Shared lemma import cursor */
+  uint64_t shared_lemma_cursor;
 
   /** Number of plugins */
   uint32_t plugins_count;
@@ -313,6 +320,9 @@ struct mcsat_solver_s {
   uint32_t na_plugin_id;
   uint32_t bv_plugin_id;
   uint32_t ff_plugin_id;
+
+  /** Lemmas already seen by this worker */
+  int_hset_t shared_lemma_seen;
 };
 
 static
@@ -327,6 +337,9 @@ static
 void propagation_check(const ivector_t* reasons, term_t x, term_t subst);
 
 static
+void mcsat_assert_formula(mcsat_solver_t* mcsat, term_t f);
+
+static
 void mcsat_stats_init(mcsat_solver_t* mcsat) {
   mcsat->solver_stats.assertions = statistics_new_int(&mcsat->stats, "mcsat::assertions");
   mcsat->solver_stats.conflicts = statistics_new_int(&mcsat->stats, "mcsat::conflicts");
@@ -337,6 +350,64 @@ void mcsat_stats_init(mcsat_solver_t* mcsat) {
   mcsat->solver_stats.restarts = statistics_new_int(&mcsat->stats, "mcsat::restarts");
   mcsat->solver_stats.partial_restarts = statistics_new_int(&mcsat->stats, "mcsat::partial_restarts");
   mcsat->solver_stats.recaches = statistics_new_int(&mcsat->stats, "mcsat::recaches");
+}
+
+static inline
+uint32_t mcsat_shared_lemma_key(term_t lemma) {
+  return (uint32_t) lemma;
+}
+
+static
+void mcsat_note_shared_lemma_seen(mcsat_solver_t* mcsat, term_t lemma) {
+  if (mcsat->shared_state != NULL) {
+    int_hset_add(&mcsat->shared_lemma_seen, mcsat_shared_lemma_key(lemma));
+  }
+}
+
+static
+bool mcsat_has_seen_shared_lemma(mcsat_solver_t* mcsat, term_t lemma) {
+  if (mcsat->shared_state == NULL) {
+    return false;
+  }
+  return int_hset_member(&mcsat->shared_lemma_seen, mcsat_shared_lemma_key(lemma));
+}
+
+static
+void mcsat_publish_shared_lemma(mcsat_solver_t* mcsat, term_t lemma) {
+  if (mcsat->shared_state != NULL && lemma != NULL_TERM) {
+    mcsat_note_shared_lemma_seen(mcsat, lemma);
+    mcsat_shared_state_publish_lemma(mcsat->shared_state, lemma, NULL);
+  }
+}
+
+static
+bool mcsat_shared_lemmas_pending(mcsat_solver_t* mcsat) {
+  if (mcsat->shared_state == NULL) {
+    return false;
+  }
+  return mcsat->shared_lemma_cursor < mcsat_shared_state_latest_lemma_seq(mcsat->shared_state);
+}
+
+static
+void mcsat_import_shared_lemmas_at_base(mcsat_solver_t* mcsat) {
+  uint64_t target;
+  uint64_t seq;
+
+  if (mcsat->shared_state == NULL || !trail_is_at_base_level(mcsat->trail)) {
+    return;
+  }
+
+  target = mcsat_shared_state_latest_lemma_seq(mcsat->shared_state);
+  for (seq = mcsat->shared_lemma_cursor + 1; seq <= target && mcsat_is_consistent(mcsat); ++seq) {
+    term_t lemma = mcsat_shared_state_get_lemma(mcsat->shared_state, seq);
+    if (lemma == NULL_TERM || mcsat_has_seen_shared_lemma(mcsat, lemma)) {
+      continue;
+    }
+    mcsat_note_shared_lemma_seen(mcsat, lemma);
+    mcsat_assert_formula(mcsat, lemma);
+  }
+
+  mcsat->shared_lemma_cursor = target;
 }
 
 static
@@ -564,6 +635,7 @@ void trail_token_lemma(trail_token_t* token, term_t lemma) {
 
   // Remember the lemma
   ivector_push(&tk->ctx->mcsat->plugin_lemmas, lemma);
+  mcsat_publish_shared_lemma(tk->ctx->mcsat, lemma);
 }
 
 static
@@ -580,6 +652,7 @@ void trail_token_definition_lemma(trail_token_t* token, term_t lemma, term_t t) 
   // Remember the definition
   ivector_push(&tk->ctx->mcsat->plugin_definition_lemmas, lemma);
   ivector_push(&tk->ctx->mcsat->plugin_definition_vars, t);
+  mcsat_publish_shared_lemma(tk->ctx->mcsat, lemma);
 }
 
 /** Construct the trail token */
@@ -854,6 +927,7 @@ void mcsat_construct(mcsat_solver_t* mcsat, const context_t* ctx) {
   mcsat->exception = (jmp_buf*) &ctx->env;
   mcsat->types = ctx->types;
   mcsat->terms = ctx->terms;
+  mcsat->shared_state = mcsat_shared_state_acquire(mcsat->terms, mcsat->types);
   mcsat->terms_size_on_solver_entry = 0;
   mcsat->status = YICES_STATUS_IDLE;
   mcsat->inconsistent_push_calls = 0;
@@ -869,7 +943,7 @@ void mcsat_construct(mcsat_solver_t* mcsat, const context_t* ctx) {
 
   // The variable database
   mcsat->var_db = safe_malloc(sizeof(variable_db_t));
-  variable_db_construct(mcsat->var_db, mcsat->terms, mcsat->types, mcsat->ctx->trace);
+  variable_db_construct(mcsat->var_db, mcsat->terms, mcsat->types, mcsat->ctx->trace, mcsat->shared_state);
   variable_db_add_new_variable_listener(mcsat->var_db, (variable_db_new_variable_notify_t*)&mcsat->var_db_notify);
 
   // List of assertions
@@ -936,6 +1010,8 @@ void mcsat_construct(mcsat_solver_t* mcsat, const context_t* ctx) {
   init_ivector(&mcsat->plugin_definition_lemmas, 0);
   init_ivector(&mcsat->plugin_definition_vars, 0);
   mcsat->plugin_definition_lemmas_i = 0;
+  mcsat->shared_lemma_cursor = 0;
+  init_int_hset(&mcsat->shared_lemma_seen, 0);
 
   // Construct stats
   statistics_construct(&mcsat->stats);
@@ -985,6 +1061,8 @@ void mcsat_destruct(mcsat_solver_t* mcsat) {
   scope_holder_destruct(&mcsat->scope);
   delete_ivector(&mcsat->assumption_vars);
   delete_int_hset(&mcsat->internal_kinds);
+  delete_int_hset(&mcsat->shared_lemma_seen);
+  mcsat_shared_state_release(mcsat->shared_state);
 }
 
 mcsat_solver_t* mcsat_new(const context_t* ctx) {
@@ -1624,6 +1702,7 @@ void mcsat_assert_formula(mcsat_solver_t* mcsat, term_t f) {
 
   // Add the terms
   f_pos = unsigned_term(f);
+  mcsat_shared_state_publish_term(mcsat->shared_state, f_pos);
   f_pos_var = variable_db_get_variable(mcsat->var_db, f_pos);
   mcsat_process_registration_queue(mcsat);
 
@@ -1739,6 +1818,7 @@ void mcsat_add_lemma(mcsat_solver_t* mcsat, ivector_t* lemma, term_t decision_bo
   uint32_t i, level, top_level;
   ivector_t unassigned;
   term_t disjunct, disjunct_pos;
+  term_t lemma_term;
   variable_t disjunct_pos_var;
   plugin_t* plugin;
 
@@ -1756,6 +1836,9 @@ void mcsat_add_lemma(mcsat_solver_t* mcsat, ivector_t* lemma, term_t decision_bo
     }
     trail_print(mcsat->trail, trace_out(mcsat->ctx->trace));
   }
+
+  lemma_term = lemma->size == 1 ? lemma->data[0] : mk_or_safe(&mcsat->tm, lemma->size, lemma->data);
+  mcsat_publish_shared_lemma(mcsat, lemma_term);
 
   init_ivector(&unassigned, 0);
 
@@ -2844,6 +2927,17 @@ void mcsat_solve(mcsat_solver_t* mcsat, const param_t *params, model_t* mdl, uin
   bool learning = true;
 
   while (!mcsat->stop_search) {
+
+    if (mcsat_shared_lemmas_pending(mcsat)) {
+      if (trail_is_at_base_level(mcsat->trail)) {
+        mcsat_import_shared_lemmas_at_base(mcsat);
+        if (!mcsat_is_consistent(mcsat)) {
+          goto conflict;
+        }
+      } else {
+        mcsat_request_restart(mcsat);
+      }
+    }
 
     // Do we restart
     if (mcsat_is_consistent(mcsat) && restart_resource > luby.restart_threshold) {

@@ -30,6 +30,7 @@
 #include "mcsat/gc.h"
 
 typedef int32_t variable_t;
+typedef struct mcsat_shared_state_s mcsat_shared_state_t;
 
 #define variable_null 0
 
@@ -55,12 +56,18 @@ struct variable_db_s {
 
   /** Free list */
   ivector_t free_list;
+
+  /** Optional shared registry used by parallel MCSAT workers */
+  mcsat_shared_state_t* shared_state;
+
+  /** Highest shared variable id already announced to local listeners */
+  variable_t shared_notified_upto;
 };
 
 typedef struct variable_db_s variable_db_t;
 
 /** Construct a new variable database */
-void variable_db_construct(variable_db_t* var_db, term_table_t* terms, type_table_t* types, tracer_t* tracer);
+void variable_db_construct(variable_db_t* var_db, term_table_t* terms, type_table_t* types, tracer_t* tracer, mcsat_shared_state_t* shared_state);
 
 /** Destruct the variable database */
 void variable_db_destruct(variable_db_t* var_db);
@@ -87,8 +94,13 @@ variable_t variable_db_get_variable_if_exists(const variable_db_t* var_db, term_
 /**
  * Returns the term associated with the variable. The variable should exist.
  */
+term_t variable_db_get_term_if_exists(const variable_db_t* var_db, variable_t x);
+
 static inline
 term_t variable_db_get_term(const variable_db_t* var_db, variable_t x) {
+  if (var_db->shared_state != NULL) {
+    return variable_db_get_term_if_exists(var_db, x);
+  }
   assert(x > 0 && x < var_db->variable_to_term_map.size);
   return var_db->variable_to_term_map.data[x];
 }

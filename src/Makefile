@@ -344,6 +344,7 @@ core_src_c := \
 mcsat_src_c := \
 	mcsat/tracing.c \
 	mcsat/solver.c \
+	mcsat/shared_state.c \
 	mcsat/variable_db.c \
 	mcsat/variable_queue.c \
 	mcsat/value.c \
@@ -756,6 +757,22 @@ endif
 # include dirs: we want -I. first
 #
 CPPFLAGS := -I. -Iinclude $(CPPFLAGS)
+
+#
+# Optional liburcu support for shared MCSAT tables
+#
+URCU_CFLAGS :=
+URCU_LIBS :=
+ifeq ($(ENABLE_MCSAT),yes)
+ifeq ($(THREAD_SAFE),1)
+  URCU_CFLAGS := $(shell pkg-config --cflags liburcu-cds liburcu-memb 2>/dev/null)
+  URCU_LIBS := $(shell pkg-config --libs liburcu-cds liburcu-memb 2>/dev/null)
+  ifneq ($(strip $(URCU_LIBS)),)
+    CPPFLAGS += -DHAVE_LIBURCU_SHARED_MCSAT -D_LGPL_SOURCE $(URCU_CFLAGS)
+    LIBS += $(URCU_LIBS)
+  endif
+endif
+endif
 
 #
 # Warning levels: dropped the flag -Winiline in all build modes.
