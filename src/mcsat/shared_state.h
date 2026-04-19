@@ -43,8 +43,8 @@ term_t mcsat_shared_state_get_variable_term(mcsat_shared_state_t* state, int32_t
 uint32_t mcsat_shared_state_variable_limit(mcsat_shared_state_t* state);
 
 uint64_t mcsat_shared_state_new_lemma_session(mcsat_shared_state_t* state);
-bool mcsat_shared_state_publish_lemma(mcsat_shared_state_t* state, uint64_t session, term_t lemma, uint64_t* seq_out);
+bool mcsat_shared_state_publish_clause(mcsat_shared_state_t* state, uint64_t session, uint32_t n_literals, const term_t literals[], uint64_t* seq_out);
 uint64_t mcsat_shared_state_latest_lemma_seq(mcsat_shared_state_t* state);
-term_t mcsat_shared_state_get_lemma(mcsat_shared_state_t* state, uint64_t session, uint64_t seq);
+uint32_t mcsat_shared_state_get_clause(mcsat_shared_state_t* state, uint64_t session, uint64_t seq, const term_t** literals_out);
 
 #endif /* MCSAT_SHARED_STATE_H_ */

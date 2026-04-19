@@ -82,10 +82,11 @@ uint64_t mcsat_shared_state_new_lemma_session(mcsat_shared_state_t* state) {
   return 0;
 }
 
-bool mcsat_shared_state_publish_lemma(mcsat_shared_state_t* state, uint64_t session, term_t lemma, uint64_t* seq_out) {
+bool mcsat_shared_state_publish_clause(mcsat_shared_state_t* state, uint64_t session, uint32_t n_literals, const term_t literals[], uint64_t* seq_out) {
   (void) state;
   (void) session;
-  (void) lemma;
+  (void) n_literals;
+  (void) literals;
   if (seq_out != NULL) {
     *seq_out = 0;
   }
@@ -97,11 +98,14 @@ uint64_t mcsat_shared_state_latest_lemma_seq(mcsat_shared_state_t* state) {
   return 0;
 }
 
-term_t mcsat_shared_state_get_lemma(mcsat_shared_state_t* state, uint64_t session, uint64_t seq) {
+uint32_t mcsat_shared_state_get_clause(mcsat_shared_state_t* state, uint64_t session, uint64_t seq, const term_t** literals_out) {
   (void) state;
   (void) session;
   (void) seq;
-  return NULL_TERM;
+  if (literals_out != NULL) {
+    *literals_out = NULL;
+  }
+  return 0;
 }
 
 #else
@@ -134,22 +138,24 @@ typedef struct {
   struct cds_lfht_node node;
 } shared_variable_node_t;
 
-typedef struct {
-  term_t lemma;
+typedef struct shared_lemma_node_s {
   uint64_t session;
+  uint32_t size;
   uint64_t seq;
   struct cds_lfht_node node;
+  term_t literals[];
 } shared_lemma_node_t;
 
 typedef struct {
-  term_t lemma;
+  shared_lemma_node_t* clause;
   uint64_t session;
-} shared_lemma_slot_t;
+} shared_clause_slot_t;
 
 typedef struct {
-  term_t lemma;
+  const term_t* literals;
+  uint32_t size;
   uint64_t session;
-} shared_lemma_key_t;
+} shared_clause_key_t;
 
 struct mcsat_shared_state_s {
   term_table_t* terms;
@@ -234,6 +240,19 @@ uint32_t shared_hash_term(term_t term) {
 }
 
 static
+uint32_t shared_hash_clause(uint64_t session, uint32_t size, const term_t literals[]) {
+  uint32_t hash;
+  uint32_t i;
+
+  hash = jenkins_hash_uint64(session);
+  hash = jenkins_hash_mix2(hash, jenkins_hash_uint32(size));
+  for (i = 0; i < size; ++i) {
+    hash = jenkins_hash_mix2(hash, shared_hash_term(literals[i]));
+  }
+  return hash;
+}
+
+static
 int shared_term_match(struct cds_lfht_node* node, const void* key) {
   const shared_term_node_t* entry = cds_lfht_entry(node, const shared_term_node_t, node);
   return entry->term == *(const term_t*) key;
@@ -248,8 +267,18 @@ int shared_variable_match(struct cds_lfht_node* node, const void* key) {
 static
 int shared_lemma_match(struct cds_lfht_node* node, const void* key) {
   const shared_lemma_node_t* entry = cds_lfht_entry(node, const shared_lemma_node_t, node);
-  const shared_lemma_key_t* lemma_key = (const shared_lemma_key_t*) key;
-  return entry->lemma == lemma_key->lemma && entry->session == lemma_key->session;
+  const shared_clause_key_t* clause_key = (const shared_clause_key_t*) key;
+  uint32_t i;
+
+  if (entry->session != clause_key->session || entry->size != clause_key->size) {
+    return 0;
+  }
+  for (i = 0; i < entry->size; ++i) {
+    if (entry->literals[i] != clause_key->literals[i]) {
+      return 0;
+    }
+  }
+  return 1;
 }
 
 static
@@ -414,10 +443,10 @@ void shared_state_ensure_lemma_chunk(mcsat_shared_state_t* state, pvector_t* chu
   chunk_id = (slot - 1) / MCSAT_SHARED_SLOT_CHUNK;
   pthread_mutex_lock(&state->storage_lock);
   while (chunks->size <= chunk_id) {
-    shared_lemma_slot_t* chunk = (shared_lemma_slot_t*) safe_malloc(MCSAT_SHARED_SLOT_CHUNK * sizeof(shared_lemma_slot_t));
+    shared_clause_slot_t* chunk = (shared_clause_slot_t*) safe_malloc(MCSAT_SHARED_SLOT_CHUNK * sizeof(shared_clause_slot_t));
     uint32_t i;
     for (i = 0; i < MCSAT_SHARED_SLOT_CHUNK; ++i) {
-      chunk[i].lemma = NULL_TERM;
+      chunk[i].clause = NULL;
       chunk[i].session = 0;
     }
     pvector_push(chunks, chunk);
@@ -449,12 +478,12 @@ term_t shared_state_load_term_slot(mcsat_shared_state_t* state, pvector_t* chunk
 }
 
 static inline
-shared_lemma_slot_t shared_state_load_lemma_slot(mcsat_shared_state_t* state, pvector_t* chunks, uint64_t slot) {
+shared_clause_slot_t shared_state_load_lemma_slot(mcsat_shared_state_t* state, pvector_t* chunks, uint64_t slot) {
   uint64_t chunk_id;
-  shared_lemma_slot_t* chunk;
-  shared_lemma_slot_t lemma_slot;
+  shared_clause_slot_t* chunk;
+  shared_clause_slot_t lemma_slot;
 
-  lemma_slot.lemma = NULL_TERM;
+  lemma_slot.clause = NULL;
   lemma_slot.session = 0;
 
   if (slot == 0) {
@@ -468,7 +497,7 @@ shared_lemma_slot_t shared_state_load_lemma_slot(mcsat_shared_state_t* state, pv
     return lemma_slot;
   }
 
-  chunk = (shared_lemma_slot_t*) chunks->data[chunk_id];
+  chunk = (shared_clause_slot_t*) chunks->data[chunk_id];
   lemma_slot = chunk[(slot - 1) % MCSAT_SHARED_SLOT_CHUNK];
   pthread_mutex_unlock(&state->storage_lock);
   return lemma_slot;
@@ -487,13 +516,13 @@ void shared_state_store_term_slot(mcsat_shared_state_t* state, pvector_t* chunks
 }
 
 static
-void shared_state_store_lemma_slot(mcsat_shared_state_t* state, pvector_t* chunks, uint64_t slot, uint64_t session, term_t lemma) {
-  shared_lemma_slot_t* chunk;
+void shared_state_store_lemma_slot(mcsat_shared_state_t* state, pvector_t* chunks, uint64_t slot, uint64_t session, shared_lemma_node_t* clause) {
+  shared_clause_slot_t* chunk;
 
   shared_state_ensure_lemma_chunk(state, chunks, slot);
   pthread_mutex_lock(&state->storage_lock);
-  chunk = (shared_lemma_slot_t*) chunks->data[(slot - 1) / MCSAT_SHARED_SLOT_CHUNK];
-  chunk[(slot - 1) % MCSAT_SHARED_SLOT_CHUNK].lemma = lemma;
+  chunk = (shared_clause_slot_t*) chunks->data[(slot - 1) / MCSAT_SHARED_SLOT_CHUNK];
+  chunk[(slot - 1) % MCSAT_SHARED_SLOT_CHUNK].clause = clause;
   chunk[(slot - 1) % MCSAT_SHARED_SLOT_CHUNK].session = session;
   pthread_mutex_unlock(&state->storage_lock);
   __sync_synchronize();
@@ -512,11 +541,11 @@ term_t shared_state_wait_term_slot(mcsat_shared_state_t* state, pvector_t* chunk
 }
 
 static
-shared_lemma_slot_t shared_state_wait_lemma_slot(mcsat_shared_state_t* state, pvector_t* chunks, uint64_t slot) {
-  shared_lemma_slot_t lemma_slot;
+shared_clause_slot_t shared_state_wait_lemma_slot(mcsat_shared_state_t* state, pvector_t* chunks, uint64_t slot) {
+  shared_clause_slot_t lemma_slot;
 
   lemma_slot = shared_state_load_lemma_slot(state, chunks, slot);
-  while (lemma_slot.lemma == NULL_TERM) {
+  while (lemma_slot.clause == NULL) {
     sched_yield();
     lemma_slot = shared_state_load_lemma_slot(state, chunks, slot);
   }
@@ -703,36 +732,41 @@ uint64_t mcsat_shared_state_new_lemma_session(mcsat_shared_state_t* state) {
   return __sync_add_and_fetch(&state->next_lemma_session, 1);
 }
 
-bool mcsat_shared_state_publish_lemma(mcsat_shared_state_t* state, uint64_t session, term_t lemma, uint64_t* seq_out) {
+bool mcsat_shared_state_publish_clause(mcsat_shared_state_t* state, uint64_t session, uint32_t n_literals, const term_t literals[], uint64_t* seq_out) {
   shared_lemma_node_t* entry;
   struct cds_lfht_node* found;
   struct cds_lfht_node* node;
   shared_lemma_node_t* found_entry;
-  shared_lemma_key_t key;
-  shared_lemma_slot_t lemma_slot;
+  shared_clause_key_t key;
+  shared_clause_slot_t lemma_slot;
   uint64_t seq;
+  uint32_t i;
 
   if (seq_out != NULL) {
     *seq_out = 0;
   }
-  if (state == NULL || session == 0 || lemma == NULL_TERM) {
+  if (state == NULL || session == 0 || n_literals == 0 || literals == NULL) {
     return false;
   }
 
-  key.lemma = lemma;
+  key.literals = literals;
+  key.size = n_literals;
   key.session = session;
   shared_state_register_thread();
-  mcsat_shared_state_publish_term(state, key.lemma);
+  for (i = 0; i < n_literals; ++i) {
+    mcsat_shared_state_publish_term(state, literals[i]);
+  }
 
-  entry = (shared_lemma_node_t*) safe_malloc(sizeof(shared_lemma_node_t));
-  entry->lemma = key.lemma;
+  entry = (shared_lemma_node_t*) safe_malloc(sizeof(shared_lemma_node_t) + n_literals * sizeof(term_t));
   entry->session = key.session;
+  entry->size = n_literals;
   entry->seq = __sync_add_and_fetch(&state->next_lemma_seq, 1);
+  memcpy(entry->literals, literals, n_literals * sizeof(term_t));
   cds_lfht_node_init(&entry->node);
 
   urcu_memb_read_lock();
   node = cds_lfht_add_unique(state->shared_lemmas,
-                             jenkins_hash_mix2(shared_hash_term(key.lemma), jenkins_hash_uint64(key.session)),
+                             shared_hash_clause(key.session, key.size, key.literals),
                              shared_lemma_match,
                              &key,
                              &entry->node);
@@ -740,7 +774,7 @@ bool mcsat_shared_state_publish_lemma(mcsat_shared_state_t* state, uint64_t sess
   urcu_memb_read_unlock();
 
   if (found == &entry->node) {
-    shared_state_store_lemma_slot(state, &state->lemma_terms, entry->seq, entry->session, entry->lemma);
+    shared_state_store_lemma_slot(state, &state->lemma_terms, entry->seq, entry->session, entry);
     shared_state_update_u64_max(&state->max_lemma_seq, entry->seq);
     shared_state_record_node(state, &state->lemma_nodes, entry);
     if (seq_out != NULL) {
@@ -753,7 +787,7 @@ bool mcsat_shared_state_publish_lemma(mcsat_shared_state_t* state, uint64_t sess
   safe_free(entry);
   seq = found_entry->seq;
   lemma_slot = shared_state_wait_lemma_slot(state, &state->lemma_terms, seq);
-  if (lemma_slot.session != found_entry->session) {
+  if (lemma_slot.session != found_entry->session || lemma_slot.clause == NULL) {
     return false;
   }
   if (seq_out != NULL) {
@@ -769,17 +803,24 @@ uint64_t mcsat_shared_state_latest_lemma_seq(mcsat_shared_state_t* state) {
   return state->max_lemma_seq;
 }
 
-term_t mcsat_shared_state_get_lemma(mcsat_shared_state_t* state, uint64_t session, uint64_t seq) {
-  shared_lemma_slot_t lemma_slot;
+uint32_t mcsat_shared_state_get_clause(mcsat_shared_state_t* state, uint64_t session, uint64_t seq, const term_t** literals_out) {
+  shared_clause_slot_t lemma_slot;
+
+  if (literals_out != NULL) {
+    *literals_out = NULL;
+  }
 
   if (state == NULL || session == 0 || seq == 0 || seq > state->max_lemma_seq) {
-    return NULL_TERM;
+    return 0;
   }
   lemma_slot = shared_state_load_lemma_slot(state, &state->lemma_terms, seq);
-  if (lemma_slot.session != session) {
-    return NULL_TERM;
+  if (lemma_slot.session != session || lemma_slot.clause == NULL) {
+    return 0;
   }
-  return lemma_slot.lemma;
+  if (literals_out != NULL) {
+    *literals_out = lemma_slot.clause->literals;
+  }
+  return lemma_slot.clause->size;
 }
 
 #endif
