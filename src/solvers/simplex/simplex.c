@@ -12786,6 +12786,57 @@ th_smt_interface_t *simplex_smt_interface(simplex_solver_t *solver) {
  *  SATELLITE SOLVER INTERFACE (FOR EGRAPH)  *
  ********************************************/
 
+static void simplex_ingest_hub_fact(simplex_solver_t *solver, egraph_fact_kind_t kind, uint32_t n,
+                                    const int32_t *a, int32_t id, composite_t *hint, void *payload) {
+  switch (kind) {
+  case EGRAPH_FACT_LITERAL:
+    assert(n == 1);
+    assert(payload != NULL);
+    if (! simplex_assert_atom(solver, payload, a[0])) {
+      assert(false);
+    }
+    break;
+
+  case EGRAPH_FACT_VAR_EQ:
+  case EGRAPH_FACT_VAR_DISEQ:
+  case EGRAPH_FACT_VAR_DISTINCT:
+    egraph_fact_push_words(&solver->egraph_queue, kind, n, a, id, hint, payload);
+    break;
+
+  default:
+    assert(false);
+    break;
+  }
+}
+
+static bool simplex_has_pending_hub_work(simplex_solver_t *solver) {
+  if (! solver->tableau_ready) {
+    return solver->unsat_before_search ||
+      solver->assertion_queue.prop_ptr < solver->assertion_queue.top ||
+      eassertion_queue_is_nonempty(&solver->egraph_queue);
+  }
+
+  return solver->assertion_queue.prop_ptr < solver->assertion_queue.top ||
+    eassertion_queue_is_nonempty(&solver->egraph_queue) ||
+    ! int_heap_is_empty(&solver->infeasible_vars) ||
+    solver->bstack.prop_ptr < solver->bstack.top;
+}
+
+static bool simplex_run_hub_propagation(simplex_solver_t *solver) {
+  return simplex_propagate(solver);
+}
+
+static fcheck_code_t simplex_run_hub_final_check(simplex_solver_t *solver) {
+  return simplex_final_check(solver);
+}
+
+static th_hub_interface_t simplex_hub = {
+  (hub_ingest_fact_fun_t) simplex_ingest_hub_fact,
+  (hub_has_pending_work_fun_t) simplex_has_pending_hub_work,
+  (hub_run_propagation_fun_t) simplex_run_hub_propagation,
+  (hub_run_final_check_fun_t) simplex_run_hub_final_check,
+};
+
 static th_egraph_interface_t simplex_egraph = {
   (assert_eq_fun_t) simplex_assert_var_eq,
   (assert_diseq_fun_t) simplex_assert_var_diseq,
@@ -12803,6 +12854,7 @@ static th_egraph_interface_t simplex_egraph = {
   (attach_to_var_fun_t) simplex_attach_eterm,
   (get_eterm_fun_t) simplex_eterm_of_var,
   (select_eq_polarity_fun_t) simplex_select_eq_polarity,
+  &simplex_hub,
 };
 
 

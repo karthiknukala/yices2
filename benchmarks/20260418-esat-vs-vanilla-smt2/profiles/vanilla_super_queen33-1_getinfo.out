@@ -1,0 +1,20 @@
+sat
+(
+ :num-terms 3654
+ :num-types 4
+ :total-run-time 0.029
+ :mem-usage 666.516
+ :boolean-variables 3419
+ :atoms 3418
+ :clauses 2924
+ :restarts 4
+ :clause-db-reduce 5
+ :clause-db-simplify 1
+ :decisions 889
+ :conflicts 449
+ :theory-conflicts 170
+ :boolean-propagations 152391
+ :theory-propagations 71471
+ :idl-solver-vars 34
+ :idl-solver-atoms 3418
+)

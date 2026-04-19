@@ -17,20 +17,9 @@
  */
 
 /*
- * Queue for storing assertions sent by egraph to theory solvers.
- *
- * The assertions are of the following forms:
- *   v1 == v2
- *   v1 != v2 with a hint
- *   distinct v[0] ... v[n-1] with a hint
- * where v1, v2, etc. are theory variable. The hint is a composite_t
- * object that the egraph requires to generate explanations.
- *
- * Each assertion is stored as the following data
- * - tag: encode the assertion type (eq, diseq, distinct)
- *        and number of variables (2 or n)
- * - hint: is stored as is for explanation
- * - v[0 ... n-1]: the variables involved
+ * Queue for storing egraph hub facts sent to theory solvers.
+ * The layout is defined in egraph_assertion_queues.h; this file keeps the
+ * original module name for compatibility while implementing the wider bus.
  */
 
 
@@ -104,17 +93,61 @@ static eassertion_t *eassertion_alloc(eassertion_queue_t *queue, uint32_t n) {
 
 
 /*
+ * Generic push
+ */
+void egraph_fact_push(egraph_fact_queue_t *queue, const egraph_fact_desc_t *fact) {
+  eassertion_t *a;
+  uint32_t i;
+
+  a = eassertion_alloc(queue, fact->arity);
+  a->hint = fact->hint;
+  a->payload = fact->payload;
+  a->tag = mk_eassertion_tag(fact->kind, fact->arity);
+  a->id = fact->id;
+  for (i=0; i<fact->arity; i++) {
+    a->var[i] = fact->data[i];
+  }
+}
+
+
+/*
+ * Generic push with inline integer payload
+ */
+void egraph_fact_push_words(egraph_fact_queue_t *queue, egraph_fact_kind_t kind, uint32_t n,
+                            const int32_t *v, int32_t id, composite_t *hint, void *payload) {
+  egraph_fact_desc_t fact;
+
+  fact.kind = kind;
+  fact.arity = n;
+  fact.data = v;
+  fact.hint = hint;
+  fact.payload = payload;
+  fact.id = id;
+  egraph_fact_push(queue, &fact);
+}
+
+
+/*
+ * Push a fact with a single literal payload
+ */
+void egraph_fact_push_literal(egraph_fact_queue_t *queue, egraph_fact_kind_t kind, literal_t l,
+                              int32_t id, composite_t *hint, void *payload) {
+  int32_t word[1];
+
+  word[0] = l;
+  egraph_fact_push_words(queue, kind, 1, word, id, hint, payload);
+}
+
+
+/*
  * Add x1 == x2 to the queue
  */
 void eassertion_push_eq(eassertion_queue_t *queue, thvar_t x1, thvar_t x2, int32_t id) {
-  eassertion_t *a;
+  int32_t var[2];
 
-  a = eassertion_alloc(queue, 2);
-  a->hint = NULL;
-  a->tag = mk_var_eq_tag();
-  a->id = id;
-  a->var[0] = x1;
-  a->var[1] = x2;
+  var[0] = x1;
+  var[1] = x2;
+  egraph_fact_push_words(queue, EGRAPH_FACT_VAR_EQ, 2, var, id, NULL, NULL);
 }
 
 
@@ -122,14 +155,11 @@ void eassertion_push_eq(eassertion_queue_t *queue, thvar_t x1, thvar_t x2, int32
  * Add x1 != x2 to the queue, with hint for explanations
  */
 void eassertion_push_diseq(eassertion_queue_t *queue, thvar_t x1, thvar_t x2, composite_t *hint) {
-  eassertion_t *a;
+  int32_t var[2];
 
-  a = eassertion_alloc(queue, 2);
-  a->hint = hint;
-  a->tag = mk_var_diseq_tag();
-  a->id = 0;
-  a->var[0] = x1;
-  a->var[1] = x2;
+  var[0] = x1;
+  var[1] = x2;
+  egraph_fact_push_words(queue, EGRAPH_FACT_VAR_DISEQ, 2, var, 0, hint, NULL);
 }
 
 
@@ -137,14 +167,5 @@ void eassertion_push_diseq(eassertion_queue_t *queue, thvar_t x1, thvar_t x2, co
  * Add (distinct v[0] ... v[n-1]) to the queue with hint for explanations
  */
 void eassertion_push_distinct(eassertion_queue_t *queue, uint32_t n, thvar_t *v, composite_t *hint) {
-  eassertion_t *a;
-  uint32_t i;
-
-  a = eassertion_alloc(queue, n);
-  a->hint = hint;
-  a->id = 0;
-  a->tag = mk_var_distinct_tag(n);
-  for (i=0; i<n; i++) {
-    a->var[i] = v[i];
-  }
+  egraph_fact_push_words(queue, EGRAPH_FACT_VAR_DISTINCT, n, v, 0, hint, NULL);
 }

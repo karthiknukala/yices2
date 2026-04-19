@@ -1,0 +1,329 @@
+Analysis of sampling esat_yices_smt2_profile (pid 47661) every 1 millisecond
+Process:         yices_smt2 [47661]
+Path:            /Users/USER/*/yices_smt2
+Load Address:    0x10086c000
+Identifier:      yices_smt2
+Version:         0
+Code Type:       ARM64
+Platform:        macOS
+Parent Process:  zsh [47654]
+Target Type:     live task
+
+Date/Time:       2026-04-18 15:21:23.359 -0700
+Launch Time:     2026-04-18 15:21:23.271 -0700
+OS Version:      macOS 15.6.1 (24G90)
+Report Version:  7
+Analysis Tool:   /usr/bin/sample
+----
+
+Call graph:
+    3480 Thread_77349397   DispatchQueue_1: com.apple.main-thread  (serial)
+      1453 matrix_submul_row  (in yices_smt2) + 76,1132,...  [0x10093a488,0x10093a8a8,...]
+      386 <deduplicated_symbol>  (in yices_smt2) + 408  [0x10089cc38]
+      + 386 select_unassigned_literal  (in yices_smt2) + 268,256,...  [0x100911644,0x100911638,...]
+      356 simplex_make_feasible  (in yices_smt2) + 1452,972,...  [0x1009417bc,0x1009415dc,...]
+      157 smt_propagation  (in yices_smt2) + 240  [0x100913de0]
+      + 157 boolean_propagation  (in yices_smt2) + 308,264,...  [0x100917a38,0x100917a0c,...]
+      139 add_column_elem  (in yices_smt2) + 104,56,...  [0x10093a1e4,0x10093a1b4,...]
+      108 smt_core_process  (in yices_smt2) + 9276  [0x10091632c]
+      + 108 backtrack  (in yices_smt2) + 144,132,...  [0x100913a04,0x1009139f8,...]
+      77 simplex_literal_propagation  (in yices_smt2) + 160,324,...  [0x100941cd4,0x100941d78,...]
+      75 update_non_basic_var_value  (in yices_smt2) + 276,308,...  [0x1009484a4,0x1009484c4,...]
+      65 safe_realloc  (in yices_smt2) + 12  [0x10099a3e4]
+      + 58 _realloc  (in libsystem_malloc.dylib) + 452  [0x181d79dac]
+      + ! 58 _malloc_zone_realloc  (in libsystem_malloc.dylib) + 148  [0x181d7957c]
+      + !   19 szone_realloc  (in libsystem_malloc.dylib) + 924  [0x181d4aeec]
+      + !   : 8 szone_malloc_should_clear  (in libsystem_malloc.dylib) + 84  [0x181d47be8]
+      + !   : | 7 tiny_malloc_should_clear  (in libsystem_malloc.dylib) + 272  [0x181d48dc4]
+      + !   : | + 7 tiny_malloc_from_free_list  (in libsystem_malloc.dylib) + 124,128,...  [0x181d495a0,0x181d495a4,...]
+      + !   : | 1 tiny_malloc_should_clear  (in libsystem_malloc.dylib) + 312  [0x181d48dec]
+      + !   : 7 szone_malloc_should_clear  (in libsystem_malloc.dylib) + 120  [0x181d47c0c]
+      + !   : | 6 small_malloc_should_clear  (in libsystem_malloc.dylib) + 176  [0x181d47dc8]
+      + !   : | + 3 small_malloc_from_free_list  (in libsystem_malloc.dylib) + 300,68  [0x181d4851c,0x181d48434]
+      + !   : | + 2 small_malloc_from_free_list  (in libsystem_malloc.dylib) + 152  [0x181d48488]
+      + !   : | + ! 1 small_free_list_remove_ptr  (in libsystem_malloc.dylib) + 124  [0x181d4cde4]
+      + !   : | + ! 1 small_free_list_remove_ptr_no_clear  (in libsystem_malloc.dylib) + 380  [0x181d4cfb0]
+      + !   : | + 1 small_malloc_from_free_list  (in libsystem_malloc.dylib) + 512  [0x181d485f0]
+      + !   : | +   1 small_free_list_remove_ptr_no_clear  (in libsystem_malloc.dylib) + 884  [0x181d4d1a8]
+      + !   : | 1 small_malloc_should_clear  (in libsystem_malloc.dylib) + 140  [0x181d47da4]
+      + !   : 4 szone_malloc_should_clear  (in libsystem_malloc.dylib) + 276,40,...  [0x181d47ca8,0x181d47bbc,...]
+      + !   17 szone_realloc  (in libsystem_malloc.dylib) + 1012  [0x181d4af44]
+      + !   : 10 free_tiny  (in libsystem_malloc.dylib) + 460  [0x181d4b99c]
+      + !   : | 4 tiny_free_no_lock  (in libsystem_malloc.dylib) + 708,28,...  [0x181d4bde0,0x181d4bb38,...]
+      + !   : | 2 tiny_free_no_lock  (in libsystem_malloc.dylib) + 140  [0x181d4bba8]
+      + !   : | + 2 get_tiny_previous_free_msize  (in libsystem_malloc.dylib) + 56  [0x181d57d54]
+      + !   : | 2 tiny_free_no_lock  (in libsystem_malloc.dylib) + 416  [0x181d4bcbc]
+      + !   : | + 2 tiny_free_list_add_ptr  (in libsystem_malloc.dylib) + 92,212  [0x181d4c398,0x181d4c410]
+      + !   : | 2 tiny_free_no_lock  (in libsystem_malloc.dylib) + 792  [0x181d4be34]
+      + !   : |   2 tiny_free_list_remove_ptr  (in libsystem_malloc.dylib) + 64,320  [0x181d4c5d0,0x181d4c6d0]
+      + !   : 2 _szone_free  (in libsystem_malloc.dylib) + 0,552  [0x181d5f078,0x181d5f2a0]
+      + !   : 2 free_small  (in libsystem_malloc.dylib) + 56,1072  [0x181d4a45c,0x181d4a854]
+      + !   : 2 free_tiny  (in libsystem_malloc.dylib) + 320,472  [0x181d4b910,0x181d4b9a8]
+      + !   : 1 free_tiny  (in libsystem_malloc.dylib) + 136  [0x181d4b858]
+      + !   :   1 _platform_memset  (in libsystem_platform.dylib) + 140  [0x181f8107c]
+      + !   5 szone_realloc  (in libsystem_malloc.dylib) + 308  [0x181d4ac84]
+      + !   : 5 tiny_try_realloc_in_place  (in libsystem_malloc.dylib) + 28,312,...  [0x181d4aff0,0x181d4b10c,...]
+      + !   5 szone_realloc  (in libsystem_malloc.dylib) + 996  [0x181d4af34]
+      + !   : 5 _platform_memmove  (in libsystem_platform.dylib) + 180,36  [0x181f81374,0x181f812e4]
+      + !   4 szone_realloc  (in libsystem_malloc.dylib) + 68  [0x181d4ab94]
+      + !   : 4 szone_size  (in libsystem_malloc.dylib) + 68  [0x181d49f44]
+      + !   :   4 tiny_size  (in libsystem_malloc.dylib) + 308,20,...  [0x181d4a0f8,0x181d49fd8,...]
+      + !   2 free_tiny  (in libsystem_malloc.dylib) + 504  [0x181d4b9c8]
+      + !   2 szone_realloc  (in libsystem_malloc.dylib) + 380  [0x181d4accc]
+      + !   : 2 small_try_realloc_in_place  (in libsystem_malloc.dylib) + 132,568  [0x181d4ca1c,0x181d4cbd0]
+      + !   2 tiny_try_realloc_in_place  (in libsystem_malloc.dylib) + 2012,2016  [0x181d4b7b0,0x181d4b7b4]
+      + !   1 default_zone_realloc  (in libsystem_malloc.dylib) + 24  [0x181d49d60]
+      + !   1 szone_realloc  (in libsystem_malloc.dylib) + 340  [0x181d4aca4]
+      + 5 _realloc  (in libsystem_malloc.dylib) + 252  [0x181d79ce4]
+      + ! 4 szone_size  (in libsystem_malloc.dylib) + 68  [0x181d49f44]
+      + ! : 4 tiny_size  (in libsystem_malloc.dylib) + 156,328,...  [0x181d4a060,0x181d4a10c,...]
+      + ! 1 szone_size  (in libsystem_malloc.dylib) + 68  [0x181d49f44]
+      + 2 _realloc  (in libsystem_malloc.dylib) + 20,408  [0x181d79bfc,0x181d79d80]
+      43 matrix_pivot  (in yices_smt2) + 96,116,...  [0x10093aa84,0x10093aa98,...]
+      34 simplex_select_polarity  (in yices_smt2) + 280,308,...  [0x1009458a0,0x1009458bc,...]
+      33 q_set  (in yices_smt2) + 52,56  [0x1009759e8,0x1009759ec]
+      23 simplex_fix_nonbasic_assignment  (in yices_smt2) + 72,100,...  [0x1009436c8,0x1009436e4,...]
+      22 matrix_submul_row  (in yices_smt2) + 252  [0x10093a538]
+      + 22 q_add  (in yices_smt2) + 20,32,...  [0x100976244,0x100976250,...]
+      22 simplex_process_assertions  (in yices_smt2) + 160,48,...  [0x100941170,0x100941100,...]
+      21 smt_propagation  (in yices_smt2) + 188,108,...  [0x100913dac,0x100913d5c,...]
+      20 simplex_go_back  (in yices_smt2) + 316,284,...  [0x100944ea0,0x100944e80,...]
+      19 q_add  (in yices_smt2) + 64,128,...  [0x100976270,0x1009762b0,...]
+      19 q_clear  (in yices_smt2) + 52,36  [0x1009752e8,0x1009752d8]
+      19 q_submul  (in yices_smt2) + 112,52,...  [0x100976a88,0x100976a4c,...]
+      17 matrix_submul_row  (in yices_smt2) + 536  [0x10093a654]
+      + 17 q_sub  (in yices_smt2) + 20,32,...  [0x100976374,0x100976380,...]
+      16 matrix_submul_row  (in yices_smt2) + 460  [0x10093a608]
+      + 16 add_column_elem  (in yices_smt2) + 0,8,...  [0x10093a17c,0x10093a184,...]
+      15 add_lower_bound  (in yices_smt2) + 140,164,...  [0x100947ea4,0x100947ebc,...]
+      15 matrix_submul_row  (in yices_smt2) + 744  [0x10093a724]
+      + 15 add_column_elem  (in yices_smt2) + 0,4,...  [0x10093a17c,0x10093a180,...]
+      15 matrix_submul_row  (in yices_smt2) + 1460  [0x10093a9f0]
+      + 15 q_clear  (in yices_smt2) + 12,0  [0x1009752c0,0x1009752b4]
+      14 add_upper_bound  (in yices_smt2) + 224,360,...  [0x100948060,0x1009480e8,...]
+      14 egraph_propagate  (in yices_smt2) + 72,140,...  [0x10091fcdc,0x10091fd20,...]
+      14 q_sub  (in yices_smt2) + 64,68,...  [0x1009763a0,0x1009763a4,...]
+      14 smt_core_process  (in yices_smt2) + 36,428,...  [0x100913f14,0x10091409c,...]
+      13 simplex_assert_atom  (in yices_smt2) + 40,184,...  [0x10094566c,0x1009456fc,...]
+      12 simplex_implied_literal  (in yices_smt2) + 244,132,...  [0x1009487c0,0x100948750,...]
+      11 matrix_submul_row  (in yices_smt2) + 124  [0x10093a4b8]
+      + 11 q_set  (in yices_smt2) + 16,0  [0x1009759c4,0x1009759b4]
+      11 xq_cmp  (in yices_smt2) + 20  [0x10096c190]
+      + 11 q_cmp  (in yices_smt2) + 4,0,...  [0x100977a78,0x100977a74,...]
+      10 q_cmp  (in yices_smt2) + 40  [0x100977a9c]
+      10 update_non_basic_var_value  (in yices_smt2) + 264  [0x100948498]
+      + 10 q_submul  (in yices_smt2) + 28  [0x100976a34]
+      9 matrix_submul_row  (in yices_smt2) + 760  [0x10093a734]
+      + 9 q_set_neg  (in yices_smt2) + 16,24,...  [0x100975a60,0x100975a68,...]
+      9 update_non_basic_var_value  (in yices_smt2) + 248  [0x100948488]
+      + 9 q_submul  (in yices_smt2) + 4,28,...  [0x100976a1c,0x100976a34,...]
+      9 xq_cmp_q  (in yices_smt2) + 16  [0x10096c1c4]
+      + 7 q_cmp  (in yices_smt2) + 4,16  [0x100977a78,0x100977a84]
+      + 2 xq_cmp_q  (in yices_smt2) + 16  [0x10096c1c4]
+      8 matrix_submul_row  (in yices_smt2) + 476  [0x10093a618]
+      + 8 q_set  (in yices_smt2) + 16,24,...  [0x1009759c4,0x1009759cc,...]
+      8 simplex_make_feasible  (in yices_smt2) + 400  [0x1009413a0]
+      + 8 int_heap_get_min  (in yices_smt2) + 188,0,...  [0x100999550,0x100999494,...]
+      7 xq_cmp  (in yices_smt2) + 36  [0x10096c1a0]
+      6 safe_malloc  (in yices_smt2) + 16  [0x10099a3c0]
+      + 6 szone_malloc_should_clear  (in libsystem_malloc.dylib) + 84  [0x181d47be8]
+      +   6 tiny_malloc_should_clear  (in libsystem_malloc.dylib) + 272  [0x181d48dc4]
+      +     4 tiny_malloc_from_free_list  (in libsystem_malloc.dylib) + 140,1276,...  [0x181d495b0,0x181d49a20,...]
+      +     2 tiny_malloc_from_free_list  (in libsystem_malloc.dylib) + 1372  [0x181d49a80]
+      +       2 tiny_free_list_add_ptr  (in libsystem_malloc.dylib) + 116,564  [0x181d4c3b0,0x181d4c570]
+      6 simplex_implied_literal  (in yices_smt2) + 116  [0x100948740]
+      + 5 propagate_literal  (in yices_smt2) + 68,24,...  [0x1009114ec,0x1009114c0,...]
+      + 1 egraph_propagate_literal  (in yices_smt2) + 0  [0x1009224c4]
+      6 simplex_propagate  (in yices_smt2) + 6216,56,...  [0x100943674,0x100941e64,...]
+      6 update_non_basic_var_value  (in yices_smt2) + 324  [0x1009484d4]
+      + 6 xq_cmp  (in yices_smt2) + 28,0  [0x10096c198,0x10096c17c]
+      5 sort_array  (in yices_smt2) + 140,68,...  [0x100996940,0x1009968f8,...]
+      4 add_lower_bound  (in yices_smt2) + 200  [0x100947ee0]
+      + 4 arith_bstack_new_constraint  (in yices_smt2) + 24,32  [0x100947354,0x10094735c]
+      4 egraph_assert_atom  (in yices_smt2) + 168,176,...  [0x1009217c8,0x1009217d0,...]
+      4 matrix_pivot  (in yices_smt2) + 140  [0x10093aab0]
+      + 4 matrix_submul_row  (in yices_smt2) + 24,12  [0x10093a454,0x10093a448]
+      4 matrix_pivot  (in yices_smt2) + 168  [0x10093aacc]
+      + 2 free_small  (in libsystem_malloc.dylib) + 128,1060  [0x181d4a4a4,0x181d4a848]
+      + 1 _szone_free  (in libsystem_malloc.dylib) + 20  [0x181d5f08c]
+      + 1 free_small  (in libsystem_malloc.dylib) + 540  [0x181d4a640]
+      +   1 small_free_list_remove_ptr_no_clear  (in libsystem_malloc.dylib) + 380  [0x181d4cfb0]
+      4 matrix_scale_row  (in yices_smt2) + 192,204,...  [0x10093a3f8,0x10093a404,...]
+      4 simplex_increase_decision_level  (in yices_smt2) + 128,168  [0x100944cf8,0x100944d20]
+      4 smt_propagation  (in yices_smt2) + 180  [0x100913da4]
+      + 4 egraph_assert_atom  (in yices_smt2) + 4,28  [0x100921724,0x10092173c]
+      3 add_lower_bound  (in yices_smt2) + 56  [0x100947e50]
+      + 3 q_set  (in yices_smt2) + 0,4,...  [0x1009759b4,0x1009759b8,...]
+      3 add_lower_bound  (in yices_smt2) + 228  [0x100947efc]
+      + 3 q_set  (in yices_smt2) + 16,20  [0x1009759c4,0x1009759c8]
+      3 add_upper_bound  (in yices_smt2) + 232  [0x100948068]
+      + 3 arith_bstack_new_constraint  (in yices_smt2) + 24  [0x100947354]
+      3 arena_push  (in yices_smt2) + 116  [0x1009926d8]
+      3 egraph_local_backtrack  (in yices_smt2) + 1200  [0x10091f964]
+      + 3 arena_pop  (in yices_smt2) + 8,64  [0x1009926e8,0x100992720]
+      3 int_heap_add  (in yices_smt2) + 44,288,...  [0x100999274,0x100999368,...]
+      3 matrix_submul_row  (in yices_smt2) + 1396  [0x10093a9b0]
+      + 3 q_set  (in yices_smt2) + 16  [0x1009759c4]
+      3 q_set_neg  (in yices_smt2) + 160,164  [0x100975af0,0x100975af4]
+      3 simplex_literal_propagation  (in yices_smt2) + 424  [0x100941ddc]
+      + 3 simplex_implied_literal  (in yices_smt2) + 28  [0x1009486e8]
+      3 simplex_process_assertions  (in yices_smt2) + 72  [0x100941118]
+      + 3 add_lower_bound  (in yices_smt2) + 20,0  [0x100947e2c,0x100947e18]
+      2 <deduplicated_symbol>  (in yices_smt2) + 440  [0x10089cc58]
+      + 2 decide_literal  (in yices_smt2) + 32  [0x100911394]
+      2 add_lower_bound  (in yices_smt2) + 240  [0x100947f08]
+      + 2 q_set  (in yices_smt2) + 16,24  [0x1009759c4,0x1009759cc]
+      2 add_upper_bound  (in yices_smt2) + 260  [0x100948084]
+      + 2 q_set  (in yices_smt2) + 16,20  [0x1009759c4,0x1009759c8]
+      2 add_upper_bound  (in yices_smt2) + 272  [0x100948090]
+      + 2 q_set  (in yices_smt2) + 4,16  [0x1009759b8,0x1009759c4]
+      2 arena_alloc  (in yices_smt2) + 160  [0x100992658]
+      2 decide_literal  (in yices_smt2) + 120,172  [0x1009113ec,0x100911420]
+      2 delete_learned_clauses  (in yices_smt2) + 100,184  [0x1009130b0,0x100913104]
+      2 egraph_increase_decision_level  (in yices_smt2) + 16  [0x10091eeac]
+      + 2 arena_push  (in yices_smt2) + 0,4  [0x100992664,0x100992668]
+      2 egraph_open_decision_level  (in yices_smt2) + 52  [0x10091ef58]
+      2 reduce_clause_database  (in yices_smt2) + 272,316  [0x100912f38,0x100912f64]
+      2 simplex_fix_nonbasic_assignment  (in yices_smt2) + 144  [0x100943710]
+      + 2 xq_cmp  (in yices_smt2) + 0  [0x10096c17c]
+      2 simplex_literal_propagation  (in yices_smt2) + 160  [0x100941cd4]
+      + 2 simplex_implied_literal  (in yices_smt2) + 28  [0x1009486e8]
+      2 simplex_literal_propagation  (in yices_smt2) + 248  [0x100941d2c]
+      + 2 xq_cmp_q  (in yices_smt2) + 24  [0x10096c1cc]
+      2 simplex_propagate  (in yices_smt2) + 768  [0x10094212c]
+      + 2 simplex_fix_nonbasic_assignment  (in yices_smt2) + 28  [0x10094369c]
+      1 <deduplicated_symbol>  (in yices_smt2) + 428  [0x10089cc4c]
+      + 1 egraph_select_polarity  (in yices_smt2) + 12  [0x100924ed4]
+      1 <deduplicated_symbol>  (in yices_smt2) + 92  [0x10089cafc]
+      1 add_lower_bound  (in yices_smt2) + 188  [0x100947ed4]
+      + 1 xq_cmp  (in yices_smt2) + 28  [0x10096c198]
+      1 add_upper_bound  (in yices_smt2) + 56  [0x100947fb8]
+      + 1 q_set  (in yices_smt2) + 4  [0x1009759b8]
+      1 add_upper_bound  (in yices_smt2) + 128  [0x100948000]
+      + 1 q_sub_one  (in yices_smt2) + 28  [0x100976c0c]
+      1 arith_bstack_new_constraint  (in yices_smt2) + 300  [0x100947468]
+      1 egraph_increase_decision_level  (in yices_smt2) + 76  [0x10091eee8]
+      1 egraph_propagate  (in yices_smt2) + 184  [0x10091fd4c]
+      + 1 simplex_propagate  (in yices_smt2) + 32  [0x100941e4c]
+      1 int_htbl_extend  (in yices_smt2) + 84  [0x100998c9c]
+      1 matrix_scale_row  (in yices_smt2) + 220  [0x10093a414]
+      + 1 q_neg  (in yices_smt2) + 0  [0x100976490]
+      1 simplex_build_explanation  (in yices_smt2) + 432  [0x1009486ac]
+      1 simplex_implied_literal  (in yices_smt2) + 96  [0x10094872c]
+      + 1 arena_alloc  (in yices_smt2) + 20  [0x1009925cc]
+      1 simplex_literal_propagation  (in yices_smt2) + 284  [0x100941d50]
+      + 1 xq_cmp_q  (in yices_smt2) + 24  [0x10096c1cc]
+      1 simplex_make_feasible  (in yices_smt2) + 464  [0x1009413e0]
+      + 1 q_cmp  (in yices_smt2) + 4  [0x100977a78]
+      1 simplex_make_feasible  (in yices_smt2) + 632  [0x100941488]
+      + 1 xq_cmp  (in yices_smt2) + 28  [0x10096c198]
+      1 simplex_propagate  (in yices_smt2) + 6192  [0x10094365c]
+      + 1 simplex_literal_propagation  (in yices_smt2) + 28  [0x100941c50]
+      1 simplex_select_polarity  (in yices_smt2) + 276  [0x10094589c]
+      + 1 xq_cmp_q  (in yices_smt2) + 0  [0x10096c1b4]
+      1 smt2_set_option  (in yices_smt2) + 1224  [0x1009a4b90]
+      + 1 fopen  (in libsystem_c.dylib) + 244  [0x181de823c]
+      +   1 open$NOCANCEL  (in libsystem_kernel.dylib) + 64  [0x181f1a6dc]
+      +     1 __open_nocancel  (in libsystem_kernel.dylib) + 8  [0x181f06808]
+      1 smt_core_process  (in yices_smt2) + 4292  [0x100914fb4]
+      + 1 backtrack  (in yices_smt2) + 132  [0x1009139f8]
+      1 smt_core_process  (in yices_smt2) + 8416  [0x100915fd0]
+      + 1 backtrack  (in yices_smt2) + 132  [0x1009139f8]
+      1 smt_core_process  (in yices_smt2) + 8816  [0x100916160]
+      + 1 smt_propagation  (in yices_smt2) + 24  [0x100913d08]
+      1 theory_kernel_branch  (in yices_smt2) + 64  [0x100924fe8]
+      1 try_cache_theory_clause  (in yices_smt2) + 176  [0x100917c18]
+
+Total number in stack (recursive counted multiple, when >=5):
+        10       q_set  (in yices_smt2) + 0  [0x1009759b4]
+        5       xq_cmp  (in yices_smt2) + 0  [0x10096c17c]
+
+Sort by top of stack, same collapsed (when >= 5):
+        matrix_submul_row  (in yices_smt2)        1457
+        select_unassigned_literal  (in yices_smt2)        386
+        simplex_make_feasible  (in yices_smt2)        356
+        add_column_elem  (in yices_smt2)        170
+        boolean_propagation  (in yices_smt2)        157
+        backtrack  (in yices_smt2)        110
+        simplex_literal_propagation  (in yices_smt2)        78
+        update_non_basic_var_value  (in yices_smt2)        75
+        q_set  (in yices_smt2)        68
+        matrix_pivot  (in yices_smt2)        43
+        q_add  (in yices_smt2)        41
+        q_submul  (in yices_smt2)        38
+        q_clear  (in yices_smt2)        34
+        simplex_select_polarity  (in yices_smt2)        34
+        q_sub  (in yices_smt2)        31
+        q_cmp  (in yices_smt2)        29
+        simplex_fix_nonbasic_assignment  (in yices_smt2)        25
+        simplex_process_assertions  (in yices_smt2)        22
+        smt_propagation  (in yices_smt2)        22
+        simplex_go_back  (in yices_smt2)        20
+        add_lower_bound  (in yices_smt2)        18
+        simplex_implied_literal  (in yices_smt2)        17
+        xq_cmp  (in yices_smt2)        17
+        add_upper_bound  (in yices_smt2)        14
+        egraph_propagate  (in yices_smt2)        14
+        smt_core_process  (in yices_smt2)        14
+        simplex_assert_atom  (in yices_smt2)        13
+        q_set_neg  (in yices_smt2)        12
+        tiny_malloc_from_free_list  (in libsystem_malloc.dylib)        11
+        arith_bstack_new_constraint  (in yices_smt2)        8
+        egraph_assert_atom  (in yices_smt2)        8
+        int_heap_get_min  (in yices_smt2)        8
+        tiny_size  (in libsystem_malloc.dylib)        8
+        simplex_propagate  (in yices_smt2)        7
+        tiny_try_realloc_in_place  (in libsystem_malloc.dylib)        7
+        xq_cmp_q  (in yices_smt2)        6
+        _platform_memmove  (in libsystem_platform.dylib)        5
+        arena_push  (in yices_smt2)        5
+        propagate_literal  (in yices_smt2)        5
+        sort_array  (in yices_smt2)        5
+
+Binary Images:
+       0x10086c000 -        0x1009fbffb +yices_smt2 (0) <A47F28AF-31A5-304A-B034-43C149F92FE4> /Users/*/yices_smt2
+       0x100ac4000 -        0x100b23ff3 +libgmp.10.dylib (0) <EEE3A1D5-4D48-34D1-91FB-97B1E0AE7A87> /usr/local/lib/libgmp.10.dylib
+       0x181b4c000 -        0x181b9f893  libobjc.A.dylib (940.4) <8CA52E4D-F699-3D14-8061-EEA9D4366538> /usr/lib/libobjc.A.dylib
+       0x181ba0000 -        0x181c3b577  dyld (1.0.0 - 1286.10) <3247E185-CED2-36FF-9E29-47A77C23E004> /usr/lib/dyld
+       0x181c3c000 -        0x181c3f168  libsystem_blocks.dylib (96) <BA8F0C40-B12D-3D8B-8396-FC3F8A733C27> /usr/lib/system/libsystem_blocks.dylib
+       0x181c40000 -        0x181c8a8ff  libxpc.dylib (2894.140.12) <1B8951EB-68DB-37BA-9581-240B796AA872> /usr/lib/system/libxpc.dylib
+       0x181c8b000 -        0x181ca67ff  libsystem_trace.dylib (1643.120.5) <AC8466B8-AF1D-3895-876B-228151F0DF1D> /usr/lib/system/libsystem_trace.dylib
+       0x181ca7000 -        0x181d453b7  libcorecrypto.dylib (1736.140.2) <7254F3F1-A46F-30B6-934A-511B730A8FC7> /usr/lib/system/libcorecrypto.dylib
+       0x181d46000 -        0x181d8d06f  libsystem_malloc.dylib (715.140.5) <85947F4E-385D-3B6D-9BF5-844EFE876D53> /usr/lib/system/libsystem_malloc.dylib
+       0x181d8e000 -        0x181dd475f  libdispatch.dylib (1521.140.2) <24CE0D89-4114-30C2-A81A-3DB1F5931CFF> /usr/lib/system/libdispatch.dylib
+       0x181dd5000 -        0x181dd7d1b  libsystem_featureflags.dylib (97) <856DB4EF-8C67-3842-970C-6FA814B07749> /usr/lib/system/libsystem_featureflags.dylib
+       0x181dd8000 -        0x181e59243  libsystem_c.dylib (1698.140.3) <DFEA8794-80CE-37C3-8F6A-108AA1D0B1B0> /usr/lib/system/libsystem_c.dylib
+       0x181e5a000 -        0x181ee6ff7  libc++.1.dylib (1900.181) <643ED232-CE19-3F63-8015-0AEE768C002F> /usr/lib/libc++.1.dylib
+       0x181ee7000 -        0x181f04fff  libc++abi.dylib (1900.181) <776A4AFB-71EE-32AB-B2EE-E6FF80818654> /usr/lib/libc++abi.dylib
+       0x181f05000 -        0x181f40653  libsystem_kernel.dylib (11417.140.69) <6E4A96AD-04B8-3E8A-B91D-087E62306246> /usr/lib/system/libsystem_kernel.dylib
+       0x181f41000 -        0x181f4da47  libsystem_pthread.dylib (536) <D6494BA9-171E-39FC-B1AA-28ECF87975D1> /usr/lib/system/libsystem_pthread.dylib
+       0x181f4e000 -        0x181f7dba3  libdyld.dylib (1286.10) <01BCB3F7-AB89-30BD-87EE-91B291EADAE8> /usr/lib/system/libdyld.dylib
+       0x181f7e000 -        0x181f85e0b  libsystem_platform.dylib (349.140.6) <FD19A599-8750-31F9-924F-C2810C938371> /usr/lib/system/libsystem_platform.dylib
+       0x181f86000 -        0x181fb56f7  libsystem_info.dylib (597) <9720B57E-A0DF-3BDD-8149-0801054B5D00> /usr/lib/system/libsystem_info.dylib
+       0x185a4c000 -        0x185a56387  libsystem_darwin.dylib (1698.140.3) <8E58BBDB-E560-3AB4-8A1D-849AB83CBFC5> /usr/lib/system/libsystem_darwin.dylib
+       0x185eae000 -        0x185ebffeb  libsystem_notify.dylib (342) <6A411086-A1A2-349F-B9CA-348F9DCBB415> /usr/lib/system/libsystem_notify.dylib
+       0x187eb1000 -        0x187ecbe8f  libsystem_networkextension.dylib (2063.140.6) <8183B684-71EB-3FB1-8378-EB830CADAE7D> /usr/lib/system/libsystem_networkextension.dylib
+       0x187f48000 -        0x187f5ffdb  libsystem_asl.dylib (402) <FE29D1E8-D286-33F9-81CB-822E632D1571> /usr/lib/system/libsystem_asl.dylib
+       0x189aa5000 -        0x189aad3a7  libsystem_symptoms.dylib (2022.140.4) <AABA26A2-74BC-3219-BAA3-ACC8D81D8589> /usr/lib/system/libsystem_symptoms.dylib
+       0x18d2f2000 -        0x18d32238f  libsystem_containermanager.dylib (689.100.6) <24EE4AC1-5C9F-3EE0-8B4E-9D060EBCBD41> /usr/lib/system/libsystem_containermanager.dylib
+       0x18e557000 -        0x18e55b5df  libsystem_configuration.dylib (1351.140.5) <B1ADB810-702B-3646-8B66-EB2C288FE51A> /usr/lib/system/libsystem_configuration.dylib
+       0x18e55c000 -        0x18e56247f  libsystem_sandbox.dylib (2401.140.15) <B86C6D35-683E-3156-BAB2-A422F5AFF2BD> /usr/lib/system/libsystem_sandbox.dylib
+       0x18f567000 -        0x18f569fe3  libquarantine.dylib (181.120.2) <8CE8DAD0-52D6-3F46-98EF-161E1397FB48> /usr/lib/system/libquarantine.dylib
+       0x18fc7d000 -        0x18fc84033  libsystem_coreservices.dylib (178.6.1) <A4E84D5A-8D0E-3692-B888-89B9EEF8753D> /usr/lib/system/libsystem_coreservices.dylib
+       0x1900fc000 -        0x1901392b7  libsystem_m.dylib (3291.100.4) <0D060230-BD2F-3C8E-ACB9-8A79F5CD8EDE> /usr/lib/system/libsystem_m.dylib
+       0x19013b000 -        0x19013e4e7  libmacho.dylib (1024.3) <87AB4EEF-3A18-3399-A767-C6BF4ECEDCEB> /usr/lib/system/libmacho.dylib
+       0x190158000 -        0x1901655ef  libcommonCrypto.dylib (600035) <E6BC26C2-DED7-3C04-A670-AEDB150BDB1F> /usr/lib/system/libcommonCrypto.dylib
+       0x190166000 -        0x19016fad7  libunwind.dylib (1900.125) <F753CC2B-775B-3567-B0C6-D2989CA9EBF4> /usr/lib/system/libunwind.dylib
+       0x190178000 -        0x19018269f  libcopyfile.dylib (224) <213FA18D-6145-3615-8DB5-906B6863EAB9> /usr/lib/system/libcopyfile.dylib
+       0x190183000 -        0x19018698f  libcompiler_rt.dylib (103.3) <F0F65700-8E9D-35F3-AC32-952D363190BC> /usr/lib/system/libcompiler_rt.dylib
+       0x190187000 -        0x19018ba1b  libsystem_collections.dylib (1698.140.3) <B77BE835-646C-3F05-BDBD-7703DE140F6A> /usr/lib/system/libsystem_collections.dylib
+       0x19018c000 -        0x19018f2c7  libsystem_secinit.dylib (153.140.2) <D15B45AD-1345-34BF-B8E3-05336C4046A0> /usr/lib/system/libsystem_secinit.dylib
+       0x190190000 -        0x190192b6f  libremovefile.dylib (81) <9BCF9A24-BECB-3DED-A78E-3A3ECD1B1757> /usr/lib/system/libremovefile.dylib
+       0x190193000 -        0x190193f27  libkeymgr.dylib (31) <B20C6921-D5BE-3BB5-B68C-32D90D629E39> /usr/lib/system/libkeymgr.dylib
+       0x190194000 -        0x19019cd57  libsystem_dnssd.dylib (2600.140.3) <61F023F3-E2C5-3F19-BA1B-B02D7564ACC4> /usr/lib/system/libsystem_dnssd.dylib
+       0x19019d000 -        0x1901a20b3  libcache.dylib (95) <2B900F8F-9EDE-3208-AB17-BD1385B5546A> /usr/lib/system/libcache.dylib
+       0x1901a3000 -        0x1901a4ca3  libSystem.B.dylib (1351) <072C7C60-2B6C-3E07-AA56-FD1750EADC2F> /usr/lib/libSystem.B.dylib
+       0x269684000 -        0x26968b109  libRosetta.dylib (349) <4EE80AAC-8204-3BD0-AB75-EDD23DE67E2F> /usr/lib/libRosetta.dylib
+       0x26aaaf000 -        0x26aab2deb  libsystem_darwindirectory.dylib (122) <277D32FB-F49A-3949-97A4-B190A3DF89E8> /usr/lib/system/libsystem_darwindirectory.dylib
+       0x26aab3000 -        0x26aaba523  libsystem_eligibility.dylib (181.140.5) <27E48AAA-644F-394A-9F62-49CEFB813716> /usr/lib/system/libsystem_eligibility.dylib
+       0x26aabb000 -        0x26aac06c5  libsystem_sanitizers.dylib (19) <FB86D2F7-4501-38E4-9D9A-83F960D7D7BA> /usr/lib/system/libsystem_sanitizers.dylib

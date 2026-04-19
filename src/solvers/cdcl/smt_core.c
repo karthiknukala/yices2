@@ -2756,21 +2756,26 @@ static bool theory_propagation(smt_core_t *s) {
   atom = s->atoms.atom;
   queue = s->stack.lit;
 
-  for (i = s->stack.theory_ptr; i < s->stack.top; i++) {
-    l = queue[i];
-    x = var_of(l);
-    if (x < n && tst_bit(has_atom, x)) {
-      if (! s->th_smt.assert_atom(s->th_solver, atom[x], l)) {
-        // theory conflict reported
-        //      assert(s->inconsistent && s->theory_conflict);
-        /*
-         * HACK: Changed this assert because the bvsolver adds the empty clause
-         * rather than create a theory conflict.
-         */
-        assert(s->inconsistent);
-        return false;
+  i = s->stack.theory_ptr;
+  if (s->th_smt.assert_atom != NULL) {
+    for (; i < s->stack.top; i++) {
+      l = queue[i];
+      x = var_of(l);
+      if (x < n && tst_bit(has_atom, x)) {
+        if (! s->th_smt.assert_atom(s->th_solver, atom[x], l)) {
+          // theory conflict reported
+          //      assert(s->inconsistent && s->theory_conflict);
+          /*
+           * HACK: Changed this assert because the bvsolver adds the empty clause
+           * rather than create a theory conflict.
+           */
+          assert(s->inconsistent);
+          return false;
+        }
       }
     }
+  } else {
+    i = s->stack.top;
   }
 
   s->stack.theory_ptr = i;
@@ -7121,4 +7126,3 @@ static void check_lemma(smt_core_t *s, uint32_t n, literal_t *a) {
 }
 
 #endif
-

@@ -1,0 +1,27 @@
+unsat
+(
+ :num-terms 3337
+ :num-types 4
+ :total-run-time 3.034
+ :mem-usage 444.516
+ :boolean-variables 1079
+ :atoms 953
+ :clauses 4227
+ :restarts 11
+ :clause-db-reduce 23
+ :clause-db-simplify 16
+ :decisions 125136
+ :conflicts 22377
+ :theory-conflicts 14802
+ :boolean-propagations 715673
+ :theory-propagations 0
+ :simplex-init-vars 779
+ :simplex-init-rows 506
+ :simplex-init-atoms 953
+ :simplex-vars 779
+ :simplex-rows 456
+ :simplex-atoms 953
+ :simplex-pivots 217634
+ :simplex-conflicts 14802
+ :simplex-interface-lemmas 0
+)

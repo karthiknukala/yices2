@@ -6077,7 +6077,7 @@ static literal_t bv_solver_make_eq_atom(bv_solver_t *solver, thvar_t x, thvar_t 
     v = egraph_new_boolean_variable(solver->egraph);
     l = pos_lit(v);
     atbl->data[i].lit = l;
-    egraph_attach_atom_to_bvar(solver->egraph, v, bvatom_idx2tagged_ptr(i));
+    egraph_attach_sat_atom_to_bvar(solver->egraph, ETYPE_BV, v, bvatom_idx2tagged_ptr(i));
     solver->stats.eq_atoms ++;
   }
 
@@ -6134,7 +6134,7 @@ static literal_t bv_solver_make_ge_atom(bv_solver_t *solver, thvar_t x, thvar_t 
     v = egraph_new_boolean_variable(solver->egraph);
     l = pos_lit(v);
     atbl->data[i].lit = l;
-    egraph_attach_atom_to_bvar(solver->egraph, v, bvatom_idx2tagged_ptr(i));
+    egraph_attach_sat_atom_to_bvar(solver->egraph, ETYPE_BV, v, bvatom_idx2tagged_ptr(i));
     solver->stats.ge_atoms ++;
   }
 
@@ -6208,7 +6208,7 @@ static literal_t bv_solver_make_sge_atom(bv_solver_t *solver, thvar_t x, thvar_t
     v = egraph_new_boolean_variable(solver->egraph);
     l = pos_lit(v);
     atbl->data[i].lit = l;
-    egraph_attach_atom_to_bvar(solver->egraph, v, bvatom_idx2tagged_ptr(i));
+    egraph_attach_sat_atom_to_bvar(solver->egraph, ETYPE_BV, v, bvatom_idx2tagged_ptr(i));
     solver->stats.sge_atoms ++;
   }
 
@@ -6290,7 +6290,7 @@ static void bv_solver_assert_neq0(bv_solver_t *solver, thvar_t x, thvar_t y) {
     v = egraph_new_boolean_variable(solver->egraph);
     l = pos_lit(v);
     atbl->data[i].lit = l;
-    egraph_attach_atom_to_bvar(solver->egraph, v, bvatom_idx2tagged_ptr(i));
+    egraph_attach_sat_atom_to_bvar(solver->egraph, ETYPE_BV, v, bvatom_idx2tagged_ptr(i));
     push_bvdiseq_bound(solver, x, y);
 
   } else if (! bvvar_is_nonzero(solver, x)) {
@@ -6620,7 +6620,7 @@ static literal_t on_the_fly_eq_atom(bv_solver_t *solver, thvar_t x, thvar_t y) {
       atbl->data[i].lit = l;
     }
 
-    egraph_attach_atom_to_bvar(solver->egraph, v, bvatom_idx2tagged_ptr(i));
+    egraph_attach_sat_atom_to_bvar(solver->egraph, ETYPE_BV, v, bvatom_idx2tagged_ptr(i));
 
   }
 
@@ -8837,6 +8837,80 @@ th_smt_interface_t *bv_solver_smt_interface(bv_solver_t *solver) {
  *  SATELLITE SOLVER INTERFACE (FOR EGRAPH)  *
  ********************************************/
 
+static void bv_solver_ingest_hub_fact(bv_solver_t *solver, egraph_fact_kind_t kind, uint32_t n,
+                                      const int32_t *a, int32_t id, composite_t *hint, void *payload) {
+  thvar_t x, y;
+  uint32_t i, j;
+
+  (void) hint;
+
+  switch (kind) {
+  case EGRAPH_FACT_LITERAL:
+    assert(n == 1);
+    if (payload != NULL) {
+      (void) bv_solver_assert_atom(solver, payload, a[0]);
+    }
+    break;
+
+  case EGRAPH_FACT_VAR_EQ:
+    assert(n == 2);
+    x = a[0];
+    y = a[1];
+    if (! solver->bitblasted) {
+      assert(solver->decision_level == solver->base_level);
+      bv_solver_assert_eq_axiom(solver, x, y, true);
+    } else {
+      egraph_fact_push_words(&solver->egraph_queue, kind, n, a, id, NULL, NULL);
+    }
+    break;
+
+  case EGRAPH_FACT_VAR_DISEQ:
+    assert(n == 2);
+    if (! solver->bitblasted) {
+      assert(solver->decision_level == solver->base_level);
+      bv_solver_assert_eq_axiom(solver, a[0], a[1], false);
+    }
+    break;
+
+  case EGRAPH_FACT_VAR_DISTINCT:
+    if (! solver->bitblasted) {
+      assert(solver->decision_level == solver->base_level);
+      for (i=0; i<n; i++) {
+        x = a[i];
+        assert(bvvar_has_eterm(&solver->vtbl, x));
+        for (j=i+1; j<n; j++) {
+          y = a[j];
+          bv_solver_assert_eq_axiom(solver, x, y, false);
+        }
+      }
+    }
+    break;
+
+  default:
+    assert(false);
+    break;
+  }
+}
+
+static bool bv_solver_has_pending_hub_work(bv_solver_t *solver) {
+  return eassertion_queue_is_nonempty(&solver->egraph_queue);
+}
+
+static bool bv_solver_run_hub_propagation(bv_solver_t *solver) {
+  return bv_solver_propagate(solver);
+}
+
+static fcheck_code_t bv_solver_run_hub_final_check(bv_solver_t *solver) {
+  return bv_solver_final_check(solver);
+}
+
+static th_hub_interface_t bv_solver_hub = {
+  (hub_ingest_fact_fun_t) bv_solver_ingest_hub_fact,
+  (hub_has_pending_work_fun_t) bv_solver_has_pending_hub_work,
+  (hub_run_propagation_fun_t) bv_solver_run_hub_propagation,
+  (hub_run_final_check_fun_t) bv_solver_run_hub_final_check,
+};
+
 static th_egraph_interface_t bv_solver_egraph = {
   (assert_eq_fun_t) bv_solver_assert_var_eq,
   (assert_diseq_fun_t) bv_solver_assert_var_diseq,
@@ -8854,6 +8928,7 @@ static th_egraph_interface_t bv_solver_egraph = {
   (attach_to_var_fun_t) bv_solver_attach_eterm,
   (get_eterm_fun_t) bv_solver_eterm_of_var,
   (select_eq_polarity_fun_t) bv_solver_select_eq_polarity,
+  &bv_solver_hub,
 };
 
 

@@ -1,0 +1,4 @@
+Waiting for 'esat_yices_smt2_profile' to appear...  esat_yices_smt2_profile appeared.
+Sampling process 47661 for 20 seconds with 1 millisecond of run time between samples
+Sampling completed, processing symbols...
+Sample analysis of process 47661 written to file /Users/e35480/git/kn-yices2-2/benchmarks/20260418-esat-vs-vanilla-smt2/profiles/esat_super_queen33-1.sample.txt

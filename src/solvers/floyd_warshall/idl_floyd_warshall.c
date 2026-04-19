@@ -1237,7 +1237,7 @@ static bvar_t bvar_for_atom(idl_solver_t *solver, int32_t x, int32_t y, int32_t 
   if (v == null_bvar) {
     v = egraph_new_boolean_variable(solver->egraph);
     atm->boolvar = v;
-    egraph_attach_atom_to_bvar(solver->egraph, v, index2atom(id));
+    egraph_attach_sat_atom_to_bvar(solver->egraph, ETYPE_INT, v, index2atom(id));
   }
   return v;
 }

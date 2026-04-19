@@ -123,7 +123,7 @@ static int32_t new_arith_atom(arith_atomtable_t *table, uint32_t header, rationa
 
   // new boolean variable
   x = egraph_new_boolean_variable(table->egraph);
-  egraph_attach_atom_to_bvar(table->egraph, x, arithatom_idx2tagged_ptr(i));
+  egraph_attach_sat_atom_to_bvar(table->egraph, ETYPE_INT, x, arithatom_idx2tagged_ptr(i));
 
   // initialize the atom descriptor
   table->atoms[i].header = header;

@@ -451,6 +451,17 @@ enum {
   null_thvar = -1,
 };
 
+/*
+ * SAT-visible binding for a satellite-owned atom.
+ * - owner identifies which backend should consume the literal
+ * - payload is the satellite-private atom handle
+ * - payload may legitimately be NULL (e.g., index 0 packed as a pointer)
+ */
+typedef struct hub_atom_s {
+  etype_t owner;
+  void *payload;
+} hub_atom_t;
+
 
 
 
@@ -466,6 +477,7 @@ typedef enum atm_tag {
   EGRAPH_ATM_TAG = 0,
   ARITH_ATM_TAG  = 1,
   BV_ATM_TAG     = 2,
+  HUB_ATM_TAG    = 3,
 } atm_tag_t;
 
 #define ATM_TAG_MASK ((size_t) 0x3)
@@ -500,6 +512,11 @@ static inline void *tagged_arith_atom(void *atm) {
 static inline void *tagged_bv_atom(void *atm) {
   assert((((size_t) atm) & ATM_TAG_MASK) == 0);
   return (void *)(((size_t) atm) | BV_ATM_TAG);
+}
+
+static inline void *tagged_hub_atom(void *atm) {
+  assert((((size_t) atm) & ATM_TAG_MASK) == 0);
+  return (void *)(((size_t) atm) | HUB_ATM_TAG);
 }
 
 

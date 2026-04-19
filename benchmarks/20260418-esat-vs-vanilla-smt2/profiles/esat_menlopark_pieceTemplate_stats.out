@@ -1,0 +1,33 @@
+unsat
+(
+ :num-terms 3103
+ :num-types 4
+ :total-run-time 16.027
+ :mem-usage 828.531
+ :boolean-variables 1001
+ :atoms 876
+ :clauses 5035
+ :restarts 12
+ :clause-db-reduce 25
+ :clause-db-simplify 18
+ :decisions 146766
+ :conflicts 26485
+ :theory-conflicts 17904
+ :boolean-propagations 761521
+ :theory-propagations 0
+ :egraph-terms 235
+ :egraph-atoms 79
+ :egraph-conflicts 0
+ :egraph-ackermann-lemmas 0
+ :egraph-final-checks 0
+ :egraph-interface-lemmas 0
+ :simplex-init-vars 701
+ :simplex-init-rows 428
+ :simplex-init-atoms 797
+ :simplex-vars 779
+ :simplex-rows 506
+ :simplex-atoms 797
+ :simplex-pivots 261565
+ :simplex-conflicts 17904
+ :simplex-interface-lemmas 0
+)

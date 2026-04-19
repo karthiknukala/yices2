@@ -768,9 +768,18 @@ typedef struct egraph_trail_stack_s {
  * ========================
  *
  * A set of functions common to all satellite solvers is used by the
- * egraph during the search. To propagate equalities and disequalities
- * to a satellite solver, the egraph calls one of the following
- * functions (in the th_egraph interface).
+ * egraph during the search. The legacy entry points below expose the
+ * original equality-oriented protocol and are kept for compatibility.
+ *
+ * Newer backends can also implement a hub-native interface that lets the
+ * egraph publish typed facts into a backend-owned queue, ask whether the
+ * backend has pending work, and run it to local quiescence.  This keeps
+ * the ownership boundary at the egraph even while the old control flow is
+ * still in place underneath some solvers.
+ *
+ * To propagate equalities and disequalities to a satellite solver, the
+ * egraph may call one of the following legacy functions (in the
+ * th_egraph interface).
  *
  * 1) void assert_equality(void *solver, thvar_t x1, thvar_t x2, int32_t id)
  *    notify solver that x1 and x2 are equal (after merging classes c1 and c2,
@@ -788,7 +797,8 @@ typedef struct egraph_trail_stack_s {
  *
  * For all three assert functions above, the satellite solver must
  * store the assertions internally and process them when propagate is
- * called.
+ * called.  If the solver implements the newer hub interface, these
+ * operations become compatibility shims over the backend's fact queue.
  *
  * 4) bool check_diseq(void *solver, thvar_t x1 thvar_t x2)
  *    return true if (x1 != x2) holds in the solver at the base level.
@@ -1094,6 +1104,34 @@ typedef struct th_explanation_s {
 
 
 /*
+ * Hub-native fact kinds exchanged between the egraph and satellite solvers.
+ * The current implementation uses equalities/disequalities/distinct facts,
+ * but the bus is intentionally wider so more theory-native traffic can move
+ * through the egraph without growing one callback per fact shape.
+ */
+typedef enum egraph_fact_kind {
+  EGRAPH_FACT_VAR_EQ = 0,
+  EGRAPH_FACT_VAR_DISEQ,
+  EGRAPH_FACT_VAR_DISTINCT,
+  EGRAPH_FACT_CLAUSE,
+  EGRAPH_FACT_PROPAGATED_LITERAL,
+  EGRAPH_FACT_IMPLIED_LITERAL,
+  EGRAPH_FACT_CONFLICT,
+  EGRAPH_FACT_LITERAL,
+  EGRAPH_FACT_BRANCH_HINT,
+  EGRAPH_FACT_ARITH_BOUND,
+  EGRAPH_FACT_BV_BIT_EQ,
+} egraph_fact_kind_t;
+
+typedef struct eassertion_queue_s {
+  uint32_t size;  // full size
+  uint32_t top;   // allocation pointer
+  uint8_t *data;  // storage
+} eassertion_queue_t;
+
+typedef eassertion_queue_t egraph_fact_queue_t;
+
+/*
  * GENERIC EGRAPH INTERFACE
  */
 typedef void (*assert_eq_fun_t)(void *satellite, thvar_t x1, thvar_t x2, int32_t id);
@@ -1112,6 +1150,18 @@ typedef void (*free_partition_fun_t)(void *satellite, ipart_t *partition);
 typedef void (*attach_to_var_fun_t)(void *satellite, thvar_t x, eterm_t t);
 typedef eterm_t (*get_eterm_fun_t)(void *satellite, thvar_t x);
 typedef literal_t (*select_eq_polarity_fun_t)(void *satellite, thvar_t x, thvar_t y, literal_t l);
+typedef void (*hub_ingest_fact_fun_t)(void *satellite, egraph_fact_kind_t kind, uint32_t arity,
+                                      const int32_t *a, int32_t id, composite_t *hint, void *payload);
+typedef bool (*hub_has_pending_work_fun_t)(void *satellite);
+typedef bool (*hub_run_propagation_fun_t)(void *satellite);
+typedef fcheck_code_t (*hub_run_final_check_fun_t)(void *satellite);
+
+typedef struct th_hub_interface_s {
+  hub_ingest_fact_fun_t      ingest_fact;
+  hub_has_pending_work_fun_t has_pending_work;
+  hub_run_propagation_fun_t  run_propagation;
+  hub_run_final_check_fun_t  run_final_check;
+} th_hub_interface_t;
 
 typedef struct th_egraph_interface_s {
   assert_eq_fun_t          assert_equality;
@@ -1130,6 +1180,7 @@ typedef struct th_egraph_interface_s {
   attach_to_var_fun_t      attach_eterm;
   get_eterm_fun_t          eterm_of_var;
   select_eq_polarity_fun_t select_eq_polarity;
+  th_hub_interface_t       *hub;
 } th_egraph_interface_t;
 
 
@@ -1401,6 +1452,7 @@ struct egraph_s {
   int_htbl_t *const_htbl;     // for hash-consing of constants (allocated on demand)
   int_htbl_t htbl;            // for hash-consing of composite terms
   object_store_t atom_store;  // for creating atoms
+  object_store_t hub_atom_store; // for SAT-visible satellite bindings
   cache_t cache;              // for creating lemmas
 
   int_hmap_t *imap;           // for or-congruence explanations
@@ -1410,7 +1462,11 @@ struct egraph_s {
   ivector_t expl_vector;      // vector of literals for conflict/explanations
   pvector_t cmp_vector;       // generic vector to store composites
   ivector_t aux_buffer;       // generic buffer used in term construction
+  ivector_t clause_buffer;    // temporary buffer for clause simplification/normalization
   int_stack_t istack;         // generic stack for recursive processing
+  egraph_fact_queue_t backend_outbox; // theory-produced literals/lemmas/conflicts
+  ivector_t backend_buffer;   // persistent storage for queued conflict clauses
+  uint32_t sat_sync_ptr;      // next SAT-trail literal to ingest directly from the backend
 
 
   /*

@@ -129,7 +129,7 @@ extern void delete_egraph(egraph_t *egraph);
  * ownership boundary is the egraph rather than the raw smt_core_t.
  */
 extern bvar_t egraph_new_boolean_variable(egraph_t *egraph);
-extern void egraph_attach_atom_to_bvar(egraph_t *egraph, bvar_t v, void *atom);
+extern void egraph_attach_sat_atom_to_bvar(egraph_t *egraph, etype_t owner, bvar_t v, void *atom);
 extern void egraph_remove_bvar_atom(egraph_t *egraph, bvar_t v);
 extern void egraph_add_empty_clause(egraph_t *egraph);
 extern void egraph_add_unit_clause(egraph_t *egraph, literal_t l);
@@ -160,8 +160,14 @@ static inline bool egraph_bvar_has_atom(egraph_t *egraph, bvar_t v) {
 }
 
 static inline void *egraph_bvar_atom(egraph_t *egraph, bvar_t v) {
+  void *atom;
+
   assert(egraph != NULL && egraph->core != NULL);
-  return bvar_atom(egraph->core, v);
+  atom = bvar_atom(egraph->core, v);
+  if (atom != NULL && atom_tag(atom) == HUB_ATM_TAG) {
+    return ((hub_atom_t *) untag_atom(atom))->payload;
+  }
+  return atom;
 }
 
 static inline bval_t egraph_bvar_value(egraph_t *egraph, bvar_t v) {

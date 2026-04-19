@@ -17,23 +17,19 @@
  */
 
 /*
- * Queue for storing assertions sent by egraph to theory solvers.
- * Solvers must process these assertions when propagate is called.
+ * Queue for storing hub facts sent by the egraph to theory solvers.
+ * Solvers process these facts when the egraph scheduler asks them to run.
  *
- * The assertions are of the following forms:
- *   v1 == v2 with an id
- *   v1 != v2 with a hint
- *   distinct v[0] ... v[n-1] with a hint
- * where v1, v2, etc. are theory variable. The hint is a composite_t
- * object that the egraph requires to generate explanations.
- * For (v1 == v2), the id is the index of an egraph edge, that's also
- * used to generate explanations.
+ * The queue started as an equality-only assertion list.  It now stores a
+ * wider set of fact kinds, while preserving the old APIs and type aliases
+ * so existing backends can keep compiling during the migration.
  *
- * Each assertion is stored as the following data
- * - tag: encode the assertion type (eq, diseq, distinct)
- *        and number of variables (2 or n)
- * - hint: is stored as is for explanation
- * - v[0 ... n-1]: the variables involved
+ * Each fact is stored as:
+ * - tag: encode the fact kind and inline arity
+ * - hint: optional explanation hint
+ * - payload: optional opaque pointer owned by the producer
+ * - id: optional integer handle (e.g., an egraph edge id)
+ * - var[0 ... n-1]: inline integer payload (theory variables, literals, ...)
  */
 
 #ifndef __EGRAPH_ASSERTION_QUEUES_H
@@ -47,14 +43,20 @@
 #include "solvers/egraph/egraph_types.h"
 
 
-/*
- * Assertion types
- */
-typedef enum eassertion_kind {
-  EGRAPH_VAR_EQ,
-  EGRAPH_VAR_DISEQ,
-  EGRAPH_VAR_DISTINCT,
-} eassertion_kind_t;
+typedef egraph_fact_kind_t eassertion_kind_t;
+
+#define EGRAPH_VAR_EQ EGRAPH_FACT_VAR_EQ
+#define EGRAPH_VAR_DISEQ EGRAPH_FACT_VAR_DISEQ
+#define EGRAPH_VAR_DISTINCT EGRAPH_FACT_VAR_DISTINCT
+
+typedef struct egraph_fact_desc_s {
+  egraph_fact_kind_t kind;
+  uint32_t arity;
+  const int32_t *data;
+  composite_t *hint;
+  void *payload;
+  int32_t id;
+} egraph_fact_desc_t;
 
 /*
  * Assertion descriptor
@@ -62,35 +64,38 @@ typedef enum eassertion_kind {
  */
 typedef struct eassertion_s {
   composite_t *hint;
+  void *payload;
   uint32_t tag;
   int32_t id;
-  thvar_t var[0]; // real size depends on arity
+  int32_t var[0]; // generic inline payload, real size depends on arity
 } eassertion_t;
+
+typedef eassertion_t egraph_fact_t;
 
 
 /*
  * Tag constructor
- * - 2 low order bits encode the kind
- * - 30 high order bits contain the arity
+ * - 4 low order bits encode the kind
+ * - 28 high order bits contain the arity
  */
-#define MAX_EASSERTION_ARITY (1<<30)
-#define EASSERTION_KIND_MASK ((uint32_t) 0x3)
+#define MAX_EASSERTION_ARITY (1U<<28)
+#define EASSERTION_KIND_MASK ((uint32_t) 0xF)
 
 static inline uint32_t mk_eassertion_tag(eassertion_kind_t k, uint32_t n) {
   assert (n < MAX_EASSERTION_ARITY);
-  return (n << 2) | k;
+  return (n << 4) | k;
 }
 
 static inline uint32_t mk_var_eq_tag(void) {
-  return mk_eassertion_tag(EGRAPH_VAR_EQ, 2);
+  return mk_eassertion_tag(EGRAPH_FACT_VAR_EQ, 2);
 }
 
 static inline uint32_t mk_var_diseq_tag(void) {
-  return mk_eassertion_tag(EGRAPH_VAR_DISEQ, 2);
+  return mk_eassertion_tag(EGRAPH_FACT_VAR_DISEQ, 2);
 }
 
 static inline uint32_t mk_var_distinct_tag(uint32_t n) {
-  return mk_eassertion_tag(EGRAPH_VAR_DISTINCT, n);
+  return mk_eassertion_tag(EGRAPH_FACT_VAR_DISTINCT, n);
 }
 
 
@@ -102,7 +107,7 @@ static inline eassertion_kind_t eassertion_tag_kind(uint32_t tag) {
 }
 
 static inline uint32_t eassertion_tag_arity(uint32_t tag) {
-  return tag>>2;
+  return tag>>4;
 }
 
 
@@ -141,21 +146,13 @@ static inline size_t eassertion_get_size(eassertion_t *a) {
   return sizeof_eassertion(eassertion_get_arity(a));
 }
 
+static inline void *eassertion_get_payload(eassertion_t *a) {
+  return a->payload;
+}
 
 
 
 
-/*
- * Assertion queue: resizable byte array where
- * the descriptors are copied
- * - data[0 ... top-1] = where existing assertions are copied
- * the full array has size bytes
- */
-typedef struct eassertion_queue_s {
-  uint32_t size;  // full size
-  uint32_t top;   // allocation pointer
-  uint8_t *data;  // storage
-} eassertion_queue_t;
 
 #define DEF_EASSERTION_QUEUE_SIZE 10000
 #define MAX_EASSERTION_QUEUE_SIZE UINT32_MAX
@@ -181,8 +178,13 @@ static inline void reset_eassertion_queue(eassertion_queue_t *queue) {
 
 
 /*
- * Add assertions to the queue
+ * Add facts to the queue
  */
+extern void egraph_fact_push(egraph_fact_queue_t *queue, const egraph_fact_desc_t *fact);
+extern void egraph_fact_push_words(egraph_fact_queue_t *queue, egraph_fact_kind_t kind, uint32_t n,
+                                   const int32_t *a, int32_t id, composite_t *hint, void *payload);
+extern void egraph_fact_push_literal(egraph_fact_queue_t *queue, egraph_fact_kind_t kind, literal_t l,
+                                     int32_t id, composite_t *hint, void *payload);
 extern void eassertion_push_eq(eassertion_queue_t *queue, thvar_t x1, thvar_t x2, int32_t id);
 extern void eassertion_push_diseq(eassertion_queue_t *queue, thvar_t x1, thvar_t x2, composite_t *hint);
 extern void eassertion_push_distinct(eassertion_queue_t *queue, uint32_t n, thvar_t *a, composite_t *hint);
