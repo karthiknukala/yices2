@@ -64,6 +64,7 @@
 #include <math.h>
 #include <pthread.h>
 #include <stdlib.h>
+#include <time.h>
 
 /**
  * Notification of new variables for the main solver.
@@ -114,6 +115,8 @@ typedef enum {
 
 #define MCSAT_MAX_PLUGINS 10
 #define MCSAT_PARALLEL_WORKER_STACK_SIZE (16u * 1024u * 1024u)
+#define MCSAT_PARALLEL_WARMUP_NS 20000000L
+#define MCSAT_PARALLEL_MIN_VARIABLES 256
 
 typedef struct {
   /** Main evaluation method */
@@ -131,6 +134,8 @@ typedef struct {
   mcsat_solver_t* winner;
   mcsat_solver_t** workers;
   uint32_t worker_count;
+  uint32_t completed_workers;
+  uint32_t unsat_workers;
 } mcsat_parallel_state_t;
 
 typedef struct {
@@ -397,6 +402,21 @@ static
 void mcsat_process_registration_queue(mcsat_solver_t* mcsat);
 
 static
+void mcsat_import_shared_lemmas(mcsat_solver_t* mcsat);
+
+static
+bool mcsat_propagate(mcsat_solver_t* mcsat, bool run_learning);
+
+static
+void mcsat_parallel_prepare_term_state(mcsat_solver_t* mcsat);
+
+static
+uint32_t mcsat_parallel_collect_split_variables(mcsat_solver_t* mcsat, uint32_t max_split_vars, ivector_t* out);
+
+static inline
+void trail_token_construct(plugin_trail_token_t* token, mcsat_plugin_context_t* ctx, variable_t x);
+
+static
 void mcsat_parallel_invalidate(mcsat_solver_t* mcsat);
 
 static
@@ -425,9 +445,64 @@ bool mcsat_is_parallel_owner(const mcsat_solver_t* mcsat) {
   return mcsat->parallel_owner == NULL;
 }
 
+static
+bool mcsat_logic_has_arrays(smt_logic_t logic) {
+  switch (logic) {
+  case AX:
+  case ABV:
+  case ALIA:
+  case ALRA:
+  case ALIRA:
+  case ANIA:
+  case ANRA:
+  case ANIRA:
+  case AUF:
+  case AUFBV:
+  case AUFBVLIA:
+  case AUFBVNIA:
+  case AUFLIA:
+  case AUFLRA:
+  case AUFLIRA:
+  case AUFNIA:
+  case AUFNRA:
+  case AUFNIRA:
+  case QF_AX:
+  case QF_ABV:
+  case QF_ALIA:
+  case QF_ALRA:
+  case QF_ALIRA:
+  case QF_ANIA:
+  case QF_ANRA:
+  case QF_ANIRA:
+  case QF_AUF:
+  case QF_AUFBV:
+  case QF_AUFBVLIA:
+  case QF_AUFBVNIA:
+  case QF_AUFLIA:
+  case QF_AUFLRA:
+  case QF_AUFLIRA:
+  case QF_AUFNIA:
+  case QF_AUFNRA:
+  case QF_AUFNIRA:
+    return true;
+  default:
+    return false;
+  }
+}
+
+static inline
+bool mcsat_parallel_problem_is_worth_fanout(const mcsat_solver_t* mcsat) {
+  if (mcsat_logic_has_arrays(mcsat->ctx->logic)) {
+    return false;
+  }
+  return variable_db_size(mcsat->var_db) >= MCSAT_PARALLEL_MIN_VARIABLES;
+}
+
 static inline
 bool mcsat_parallel_is_enabled(const mcsat_solver_t* mcsat) {
-  return mcsat_is_parallel_owner(mcsat) && mcsat->ctx->mcsat_options.parallel_workers > 1;
+  return mcsat_is_parallel_owner(mcsat) &&
+         mcsat->ctx->mcsat_options.parallel_workers > 1 &&
+         mcsat_parallel_problem_is_worth_fanout(mcsat);
 }
 
 static inline
@@ -545,6 +620,24 @@ uint32_t mcsat_shared_lemma_key(term_t lemma) {
 }
 
 static
+void mcsat_lemma_term_to_literals(mcsat_solver_t* mcsat, term_t lemma, ivector_t* out) {
+  term_kind_t kind;
+
+  ivector_reset(out);
+  if (lemma == NULL_TERM) {
+    return;
+  }
+
+  kind = term_kind(mcsat->terms, lemma);
+  if (is_pos_term(lemma) && kind == OR_TERM) {
+    composite_term_t* or_desc = or_term_desc(mcsat->terms, lemma);
+    ivector_add(out, or_desc->arg, or_desc->arity);
+  } else {
+    ivector_push(out, lemma);
+  }
+}
+
+static
 void mcsat_note_shared_lemma_seen(mcsat_solver_t* mcsat, term_t lemma) {
   if (mcsat->shared_state != NULL) {
     int_hset_add(&mcsat->shared_lemma_seen, mcsat_shared_lemma_key(lemma));
@@ -567,12 +660,6 @@ void mcsat_publish_shared_lemma(mcsat_solver_t* mcsat, term_t lemma) {
 
     mcsat_note_shared_lemma_seen(mcsat, lemma);
     created = mcsat_shared_state_publish_lemma(mcsat->shared_state, mcsat->shared_lemma_session, lemma, &seq);
-    /*
-     * Parallel workers serialize solve-time term activity today, so while a
-     * worker is running it is also the only publisher for this session. Skip
-     * over freshly published sequence numbers immediately to avoid quadratic
-     * self-import scans on lemma-heavy instances.
-     */
     if (created && seq > mcsat->shared_lemma_cursor) {
       mcsat->shared_lemma_cursor = seq;
     }
@@ -588,11 +675,46 @@ bool mcsat_shared_lemmas_pending(mcsat_solver_t* mcsat) {
 }
 
 static
-void mcsat_import_shared_lemmas_at_base(mcsat_solver_t* mcsat) {
+void mcsat_install_shared_lemma(mcsat_solver_t* mcsat, term_t lemma_term) {
+  ivector_t lemma_literals;
+  uint32_t i;
+
+  init_ivector(&lemma_literals, 0);
+  mcsat_lemma_term_to_literals(mcsat, lemma_term, &lemma_literals);
+  if (lemma_literals.size == 0) {
+    delete_ivector(&lemma_literals);
+    return;
+  }
+
+  for (i = 0; i < lemma_literals.size; ++i) {
+    term_t atom = unsigned_term(lemma_literals.data[i]);
+    if (atom != NULL_TERM) {
+      (void) variable_db_get_variable(mcsat->var_db, atom);
+    }
+  }
+  mcsat_process_registration_queue(mcsat);
+
+  for (i = 0; i < mcsat->plugins_count; ++i) {
+    plugin_t* plugin = mcsat->plugins[i].plugin;
+    if (plugin->new_lemma_notify) {
+      plugin_trail_token_t prop_token;
+
+      trail_token_construct(&prop_token, mcsat->plugins[i].plugin_ctx, variable_null);
+      mcsat_term_lock(mcsat);
+      plugin->new_lemma_notify(plugin, &lemma_literals, (trail_token_t*) &prop_token);
+      mcsat_term_unlock(mcsat);
+    }
+  }
+
+  delete_ivector(&lemma_literals);
+}
+
+static
+void mcsat_import_shared_lemmas(mcsat_solver_t* mcsat) {
   uint64_t target;
   uint64_t seq;
 
-  if (mcsat->shared_state == NULL || mcsat->shared_lemma_session == 0 || !trail_is_at_base_level(mcsat->trail)) {
+  if (mcsat->shared_state == NULL || mcsat->shared_lemma_session == 0) {
     return;
   }
 
@@ -603,7 +725,7 @@ void mcsat_import_shared_lemmas_at_base(mcsat_solver_t* mcsat) {
       continue;
     }
     mcsat_note_shared_lemma_seen(mcsat, lemma);
-    mcsat_assert_formula(mcsat, lemma);
+    mcsat_install_shared_lemma(mcsat, lemma);
   }
 
   mcsat->shared_lemma_cursor = target;
@@ -611,15 +733,25 @@ void mcsat_import_shared_lemmas_at_base(mcsat_solver_t* mcsat) {
 
 static
 void mcsat_heuristics_init(mcsat_solver_t* mcsat, const param_t *params) {
-  mcsat->heuristic_params.restart_interval = 10 + 2 * mcsat->worker_id;
-  mcsat->heuristic_params.lemma_restart_weight_type =
-      (mcsat->worker_id % 2 == 0) ? LEMMA_WEIGHT_SIZE : LEMMA_WEIGHT_GLUE;
-  mcsat->heuristic_params.recache_interval = 300;
-  // Use params for random decision parameters
-  mcsat->heuristic_params.random_decision_freq = params->randomness;
-  if (mcsat->worker_id > 0 && mcsat->heuristic_params.random_decision_freq == 0.0) {
-    mcsat->heuristic_params.random_decision_freq = 0.01 * ((mcsat->worker_id % 3) + 1);
+  static const uint32_t restart_intervals[] = { 10, 18, 32, 56 };
+  static const uint32_t recache_intervals[] = { 300, 220, 420, 640 };
+  static const lemma_weight_type_t lemma_weights[] = {
+    LEMMA_WEIGHT_SIZE,
+    LEMMA_WEIGHT_GLUE,
+    LEMMA_WEIGHT_UNIT,
+    LEMMA_WEIGHT_GLUE
+  };
+  static const double portfolio_randomness[] = { 0.0, 0.08, 0.18, 0.35 };
+  uint32_t portfolio_i = mcsat->worker_id % 4;
+  double random_freq = params->randomness;
+
+  mcsat->heuristic_params.restart_interval = restart_intervals[portfolio_i];
+  mcsat->heuristic_params.lemma_restart_weight_type = lemma_weights[portfolio_i];
+  mcsat->heuristic_params.recache_interval = recache_intervals[portfolio_i];
+  if (random_freq < portfolio_randomness[portfolio_i]) {
+    random_freq = portfolio_randomness[portfolio_i];
   }
+  mcsat->heuristic_params.random_decision_freq = random_freq;
   mcsat->heuristic_params.random_decision_seed = params->random_seed + (7919u * mcsat->worker_id);
 }
 
@@ -1135,6 +1267,8 @@ void mcsat_parallel_state_construct(mcsat_parallel_state_t* parallel) {
   parallel->winner = NULL;
   parallel->workers = NULL;
   parallel->worker_count = 0;
+  parallel->completed_workers = 0;
+  parallel->unsat_workers = 0;
 }
 
 static
@@ -1647,6 +1781,124 @@ static void mcsat_process_registration_queue(mcsat_solver_t* mcsat) {
   int_mset_destruct(&to_notify);
 }
 
+static
+bool mcsat_term_is_prebuilt_input_term(const mcsat_solver_t* mcsat, term_t term) {
+  term = unsigned_term(term);
+  return term != NULL_TERM && term < mcsat->terms_size_on_solver_entry;
+}
+
+static
+bool mcsat_term_is_safe_split_term(const mcsat_solver_t* mcsat, term_t term) {
+  term_kind_t kind;
+
+  term = unsigned_term(term);
+  if (term == NULL_TERM ||
+      term == true_term ||
+      term == false_term ||
+      !mcsat_term_is_prebuilt_input_term(mcsat, term) ||
+      term_type_kind(mcsat->terms, term) != BOOL_TYPE) {
+    return false;
+  }
+
+  kind = term_kind(mcsat->terms, term);
+  switch (kind) {
+  case VARIABLE:
+  case UNINTERPRETED_TERM:
+    return true;
+
+  case EQ_TERM: {
+    composite_term_t* eq_desc = eq_term_desc(mcsat->terms, term);
+    type_kind_t lhs_kind = term_type_kind(mcsat->terms, eq_desc->arg[0]);
+
+    return mcsat_term_is_prebuilt_input_term(mcsat, eq_desc->arg[0]) &&
+           mcsat_term_is_prebuilt_input_term(mcsat, eq_desc->arg[1]) &&
+           (lhs_kind == UNINTERPRETED_TYPE || lhs_kind == SCALAR_TYPE);
+  }
+
+  default:
+    return false;
+  }
+}
+
+static
+bool mcsat_parallel_try_add_split_variable(mcsat_solver_t* mcsat, variable_t var, ivector_t* split_vars, int_hset_t* seen) {
+  term_t term;
+
+  if (var == variable_null ||
+      var >= mcsat->var_db->variable_to_term_map.size ||
+      mcsat->var_db->variable_to_term_map.data[var] == NULL_TERM ||
+      int_hset_member(seen, var) ||
+      trail_has_value(mcsat->trail, var) ||
+      !variable_db_is_boolean(mcsat->var_db, var)) {
+    return false;
+  }
+
+  term = variable_db_get_term(mcsat->var_db, var);
+  if (!mcsat_term_is_safe_split_term(mcsat, term)) {
+    return false;
+  }
+
+  int_hset_add(seen, var);
+  ivector_push(split_vars, var);
+  return true;
+}
+
+static
+uint32_t mcsat_parallel_collect_split_variables(mcsat_solver_t* mcsat, uint32_t max_split_vars, ivector_t* out) {
+  uint32_t i;
+  int_hset_t seen;
+
+  ivector_reset(out);
+  if (max_split_vars == 0) {
+    return 0;
+  }
+
+  init_int_hset(&seen, 0);
+
+  for (i = 0; i < mcsat->top_decision_vars.size && out->size < max_split_vars; ++i) {
+    (void) mcsat_parallel_try_add_split_variable(mcsat, mcsat->top_decision_vars.data[i], out, &seen);
+  }
+
+  for (i = 0; i < mcsat->ctx->mcsat_var_order.size && out->size < max_split_vars; ++i) {
+    term_t t = mcsat->ctx->mcsat_var_order.data[i];
+    variable_t var = variable_db_get_variable_if_exists(mcsat->var_db, unsigned_term(t));
+    if (var != variable_null) {
+      (void) mcsat_parallel_try_add_split_variable(mcsat, var, out, &seen);
+    }
+  }
+
+  for (i = 1; i <= mcsat->var_queue.heap_last && out->size < max_split_vars; ++i) {
+    (void) mcsat_parallel_try_add_split_variable(mcsat, mcsat->var_queue.heap[i], out, &seen);
+  }
+
+  delete_int_hset(&seen);
+  return out->size;
+}
+
+static
+void mcsat_parallel_prepare_term_state(mcsat_solver_t* mcsat) {
+  uint32_t i;
+
+  mcsat_process_registration_queue(mcsat);
+  if (mcsat->shared_state == NULL) {
+    return;
+  }
+
+  for (i = 1; i < mcsat->var_db->variable_to_term_map.size; ++i) {
+    term_t term = mcsat->var_db->variable_to_term_map.data[i];
+    if (mcsat_term_is_prebuilt_input_term(mcsat, term)) {
+      mcsat_shared_state_publish_term(mcsat->shared_state, term);
+    }
+  }
+
+  for (i = 0; i < mcsat->assertion_terms_original.size; ++i) {
+    term_t term = unsigned_term(mcsat->assertion_terms_original.data[i]);
+    if (mcsat_term_is_prebuilt_input_term(mcsat, term)) {
+      mcsat_shared_state_publish_term(mcsat->shared_state, term);
+    }
+  }
+}
+
 /** Pass true to mark terms and types in the internal yices term tables */
 static
 void mcsat_gc(mcsat_solver_t* mcsat, bool mark_and_gc_internal) {
@@ -1938,6 +2190,10 @@ bool mcsat_propagate(mcsat_solver_t* mcsat, bool run_learning) {
   bool someone_propagated;
 
   do {
+    if (mcsat_shared_lemmas_pending(mcsat)) {
+      mcsat_import_shared_lemmas(mcsat);
+    }
+
     // Repeat until no plugin makes any progress
     someone_propagated = false;
     // Propagate with all the plugins in turn
@@ -2870,6 +3126,60 @@ bool mcsat_decide_assumption(mcsat_solver_t* mcsat, model_t* mdl, uint32_t n_ass
   return assumption_decided;
 }
 
+static
+bool mcsat_apply_literal_assumptions(mcsat_solver_t* mcsat, uint32_t n_assumptions, const term_t assumptions[]) {
+  uint32_t i;
+
+  for (i = 0; i < n_assumptions; ++i) {
+    term_t literal = assumptions[i];
+    term_t atom = unsigned_term(literal);
+    variable_t var;
+    const mcsat_value_t* value;
+    uint32_t plugin_i;
+    plugin_t* plugin;
+    plugin_trail_token_t decision_token;
+
+    assert(term_type_kind(mcsat->terms, atom) == BOOL_TYPE);
+    value = (literal == atom) ? &mcsat_value_true : &mcsat_value_false;
+
+    var = variable_db_get_variable(mcsat->var_db, atom);
+    ivector_push(&mcsat->assumption_vars, var);
+    mcsat_process_registration_queue(mcsat);
+
+    if (trail_has_value(mcsat->trail, var)) {
+      assert(trail_get_value(mcsat->trail, var)->type == VALUE_BOOLEAN);
+      if (trail_get_boolean_value(mcsat->trail, var) != value->b) {
+        uint32_t plugin_i = trail_get_source_id(mcsat->trail, var);
+        if (plugin_i == MCSAT_MAX_PLUGINS) {
+          mcsat->plugin_in_conflict = NULL;
+        } else {
+          mcsat->plugin_in_conflict = mcsat->plugins[plugin_i].plugin_ctx;
+        }
+        mcsat->variable_in_conflict = var;
+        return false;
+      }
+      continue;
+    }
+
+    plugin_i = mcsat->decision_makers[variable_db_get_type_kind(mcsat->var_db, var)];
+    assert(plugin_i != MCSAT_MAX_PLUGINS);
+    plugin = mcsat->plugins[plugin_i].plugin;
+
+    trail_token_construct(&decision_token, mcsat->plugins[plugin_i].plugin_ctx, var);
+    mcsat_push_internal(mcsat);
+    assert(plugin->decide_assignment);
+    mcsat_term_lock(mcsat);
+    plugin->decide_assignment(plugin, var, value, (trail_token_t*) &decision_token);
+    mcsat_term_unlock(mcsat);
+
+    assert(decision_token.used);
+    (*mcsat->solver_stats.decisions)++;
+    mcsat->assumptions_decided_level = mcsat->trail->decision_level;
+  }
+
+  return true;
+}
+
 /**
  * Finds the correct plugin for var and asks it to make a decision.
  * Returns true if a decision was made on var.
@@ -3187,29 +3497,36 @@ void mcsat_solve_local(mcsat_solver_t* mcsat, const param_t *params, model_t* md
       mcsat_trace_printf(mcsat->ctx->trace, "solving with assumptions\n");
     }
     assert(mcsat->assumption_vars.size == 0);
-    uint32_t i;
-    for (i = 0; i < n_assumptions; ++ i) {
-      // Apply the pre-processor. If the variable is substituted, we
-      // need to add the equality x = t
-      term_t x = assumptions[i];
-      assert(term_kind(mcsat->terms, x) == UNINTERPRETED_TERM || term_kind(mcsat->terms, x) == VARIABLE);
-      assert(is_pos_term(x));
-      mcsat_term_lock(mcsat);
-      term_t x_pre = preprocessor_apply(&mcsat->preprocessor, x, NULL, true);
-      if (x != x_pre) {
-        // Assert x = t although we solved it already :(
-        term_t eq = mk_eq(&mcsat->tm, x, x_pre);
-        mcsat_term_unlock(mcsat);
-        mcsat_assert_formulas_internal(mcsat, 1, &eq, false);
-      } else {
-        mcsat_term_unlock(mcsat);
+    if (mdl == NULL) {
+      if (!mcsat_apply_literal_assumptions(mcsat, n_assumptions, assumptions)) {
+        goto assumptions_done;
       }
-      // Make sure the variable is registered (maybe it doesn't appear in assertions)
-      variable_t x_var = variable_db_get_variable(mcsat->var_db, unsigned_term(x));
-      ivector_push(&mcsat->assumption_vars, x_var);
-      mcsat_process_registration_queue(mcsat);
+    } else {
+      uint32_t i;
+      for (i = 0; i < n_assumptions; ++ i) {
+        // Apply the pre-processor. If the variable is substituted, we
+        // need to add the equality x = t
+        term_t x = assumptions[i];
+        assert(term_kind(mcsat->terms, x) == UNINTERPRETED_TERM || term_kind(mcsat->terms, x) == VARIABLE);
+        assert(is_pos_term(x));
+        mcsat_term_lock(mcsat);
+        term_t x_pre = preprocessor_apply(&mcsat->preprocessor, x, NULL, true);
+        if (x != x_pre) {
+          // Assert x = t although we solved it already :(
+          term_t eq = mk_eq(&mcsat->tm, x, x_pre);
+          mcsat_term_unlock(mcsat);
+          mcsat_assert_formulas_internal(mcsat, 1, &eq, false);
+        } else {
+          mcsat_term_unlock(mcsat);
+        }
+        // Make sure the variable is registered (maybe it doesn't appear in assertions)
+        variable_t x_var = variable_db_get_variable(mcsat->var_db, unsigned_term(x));
+        ivector_push(&mcsat->assumption_vars, x_var);
+        mcsat_process_registration_queue(mcsat);
+      }
     }
   }
+assumptions_done:
 
   // Initialize assumption info
   mcsat->interpolant = NULL_TERM;
@@ -3258,11 +3575,9 @@ void mcsat_solve_local(mcsat_solver_t* mcsat, const param_t *params, model_t* md
   while (!mcsat_should_stop(mcsat)) {
 
     if (mcsat_shared_lemmas_pending(mcsat)) {
-      if (trail_is_at_base_level(mcsat->trail)) {
-        mcsat_import_shared_lemmas_at_base(mcsat);
-        if (!mcsat_is_consistent(mcsat)) {
-          goto conflict;
-        }
+      mcsat_import_shared_lemmas(mcsat);
+      if (!mcsat_is_consistent(mcsat)) {
+        goto conflict;
       }
     }
 
@@ -3299,7 +3614,10 @@ void mcsat_solve_local(mcsat_solver_t* mcsat, const param_t *params, model_t* md
     }
 
     // Should we decide on an assumption
-    bool assumption_decided = mcsat_decide_assumption(mcsat, mdl, n_assumptions, assumptions);
+    bool assumption_decided = false;
+    if (!(mdl == NULL && n_assumptions > 0)) {
+      assumption_decided = mcsat_decide_assumption(mcsat, mdl, n_assumptions, assumptions);
+    }
     if (assumption_decided) {
       continue;
     }
@@ -3451,18 +3769,28 @@ void mcsat_parallel_report_result(mcsat_solver_t* worker) {
     return;
   }
 
-  if (worker->status != YICES_STATUS_SAT &&
-      worker->status != YICES_STATUS_UNSAT &&
-      worker->status != YICES_STATUS_ERROR) {
-    return;
-  }
-
   pthread_mutex_lock(&parallel->result_lock);
-  if (!parallel->result_ready) {
+  parallel->completed_workers ++;
+
+  if ((worker->status == YICES_STATUS_SAT || worker->status == YICES_STATUS_ERROR) &&
+      !parallel->result_ready) {
     parallel->result_ready = true;
     parallel->result_status = worker->status;
     parallel->winner = worker;
     mcsat_parallel_request_stop_locked(parallel);
+  } else if (worker->status == YICES_STATUS_UNSAT) {
+    parallel->unsat_workers ++;
+    if (parallel->winner == NULL) {
+      parallel->winner = worker;
+    }
+    if (!parallel->result_ready && parallel->unsat_workers == parallel->worker_count) {
+      parallel->result_ready = true;
+      parallel->result_status = YICES_STATUS_UNSAT;
+      mcsat_parallel_request_stop_locked(parallel);
+    }
+  } else if (!parallel->result_ready && parallel->completed_workers == parallel->worker_count) {
+    parallel->result_ready = true;
+    parallel->result_status = YICES_STATUS_INTERRUPTED;
   }
   pthread_mutex_unlock(&parallel->result_lock);
 }
@@ -3477,14 +3805,7 @@ void* mcsat_parallel_worker_main(void* data) {
   worker = task->worker;
   code = setjmp(worker->worker_env);
   if (code == 0) {
-    /*
-     * Workers still share the global term table. Until the term store is made
-     * immutable or truly reader/writer-safe, serialize solve-time access to it
-     * so concurrent term construction cannot race with lock-free readers.
-     */
-    mcsat_term_lock(worker);
     mcsat_solve_local(worker, task->params, task->mdl, task->n_assumptions, task->assumptions);
-    mcsat_term_unlock_all(worker);
   } else {
     mcsat_term_unlock_all(worker);
     worker->status = YICES_STATUS_ERROR;
@@ -3510,6 +3831,7 @@ void mcsat_parallel_destroy_replicas(mcsat_solver_t** workers, uint32_t count, m
 static
 void mcsat_solve_parallel(mcsat_solver_t* mcsat, const param_t *params, model_t* mdl, uint32_t n_assumptions, const term_t assumptions[]) {
   mcsat_parallel_state_t* parallel;
+  uint32_t requested_workers;
   uint32_t worker_count;
   uint32_t i;
   uint64_t session;
@@ -3519,16 +3841,19 @@ void mcsat_solve_parallel(mcsat_solver_t* mcsat, const param_t *params, model_t*
   pthread_t* threads;
   pthread_attr_t thread_attr;
   mcsat_parallel_worker_task_t* tasks;
-  mcsat_parallel_worker_task_t current_task;
   mcsat_solver_t* winner;
-  int32_t current_code;
-  jmp_buf* saved_exception;
+  ivector_t split_vars;
+  term_t* split_assumptions;
+  uint32_t split_var_count;
+  uint32_t max_split_vars;
 
   parallel = mcsat->parallel_state;
   assert(parallel != NULL);
 
-  worker_count = (uint32_t) mcsat->ctx->mcsat_options.parallel_workers;
-  if (worker_count <= 1) {
+  requested_workers = (uint32_t) mcsat->ctx->mcsat_options.parallel_workers;
+  if (requested_workers <= 1 ||
+      n_assumptions > 0 ||
+      mcsat->ctx->mcsat_options.model_interpolation) {
     session = mcsat->shared_state == NULL ? 0 : mcsat_shared_state_new_lemma_session(mcsat->shared_state);
     mcsat_reset_shared_lemma_session(mcsat, session);
     mcsat_solve_local(mcsat, params, mdl, n_assumptions, assumptions);
@@ -3536,108 +3861,104 @@ void mcsat_solve_parallel(mcsat_solver_t* mcsat, const param_t *params, model_t*
     return;
   }
 
+  // Freeze the entry frontier before we choose split atoms or publish shared term state.
+  mcsat->terms_size_on_solver_entry = nterms(mcsat->terms);
+  mcsat_process_registration_queue(mcsat);
+  init_ivector(&split_vars, 0);
+  max_split_vars = 0;
+  worker_count = 1;
+  while ((worker_count << 1) <= requested_workers) {
+    worker_count <<= 1;
+    max_split_vars ++;
+  }
+  split_var_count = mcsat_parallel_collect_split_variables(mcsat, max_split_vars, &split_vars);
+  worker_count = split_var_count == 0 ? 1u : (1u << split_var_count);
+  if (worker_count <= 1) {
+    delete_ivector(&split_vars);
+    session = mcsat->shared_state == NULL ? 0 : mcsat_shared_state_new_lemma_session(mcsat->shared_state);
+    mcsat_reset_shared_lemma_session(mcsat, session);
+    mcsat_solve_local(mcsat, params, mdl, n_assumptions, assumptions);
+    mcsat_clear_pending_model_hint(mcsat);
+    return;
+  }
+
+  mcsat_parallel_prepare_term_state(mcsat);
   mcsat_parallel_destroy_winner(mcsat);
   parallel->running = true;
   parallel->stop_requested = false;
   parallel->result_ready = false;
   parallel->result_status = YICES_STATUS_IDLE;
   parallel->winner = NULL;
+  parallel->completed_workers = 0;
+  parallel->unsat_workers = 0;
   mcsat->stop_search = false;
+  mcsat->status = YICES_STATUS_SEARCHING;
 
   workers = (mcsat_solver_t**) safe_malloc(worker_count * sizeof(mcsat_solver_t*));
-  threads = (pthread_t*) safe_malloc((worker_count - 1) * sizeof(pthread_t));
-  tasks = (mcsat_parallel_worker_task_t*) safe_malloc((worker_count - 1) * sizeof(mcsat_parallel_worker_task_t));
+  threads = (pthread_t*) safe_malloc(worker_count * sizeof(pthread_t));
+  tasks = (mcsat_parallel_worker_task_t*) safe_malloc(worker_count * sizeof(mcsat_parallel_worker_task_t));
+  split_assumptions = (term_t*) safe_malloc(worker_count * split_var_count * sizeof(term_t));
   for (i = 0; i < worker_count; ++i) {
     workers[i] = NULL;
   }
-  workers[0] = mcsat;
 
   pthread_mutex_lock(&parallel->result_lock);
   parallel->workers = workers;
-  parallel->worker_count = 1;
+  parallel->worker_count = worker_count;
   pthread_mutex_unlock(&parallel->result_lock);
 
-  session = 0;
+  session = mcsat->shared_state == NULL ? 0 : mcsat_shared_state_new_lemma_session(mcsat->shared_state);
   mcsat_reset_shared_lemma_session(mcsat, session);
 
-  current_task.worker = mcsat;
-  current_task.params = params;
-  current_task.mdl = mdl;
-  current_task.n_assumptions = n_assumptions;
-  current_task.assumptions = assumptions;
-  saved_exception = mcsat->exception;
-  mcsat_set_exception_handler(mcsat, &mcsat->worker_env);
-  current_code = setjmp(mcsat->worker_env);
-  if (current_code == 0) {
-    /*
-     * See mcsat_parallel_worker_main(): correctness first while the shared
-     * term table remains mutable.
-     */
-    mcsat_term_lock(mcsat);
-    mcsat_solve_local(mcsat, params, mdl, n_assumptions, assumptions);
-    mcsat_term_unlock_all(mcsat);
-  } else {
-    mcsat_term_unlock_all(mcsat);
-    mcsat->status = YICES_STATUS_ERROR;
+  code = pthread_attr_init(&thread_attr);
+  if (code != 0) {
+    perror_fatal("pthread_attr_init");
   }
-  mcsat_set_exception_handler(mcsat, saved_exception);
-  mcsat_parallel_report_result(mcsat);
-
-  if (!parallel->result_ready && !parallel->stop_requested) {
-    code = pthread_attr_init(&thread_attr);
+  code = pthread_attr_getstacksize(&thread_attr, &stack_size);
+  if (code != 0) {
+    perror_fatal("pthread_attr_getstacksize");
+  }
+  if (stack_size < MCSAT_PARALLEL_WORKER_STACK_SIZE) {
+    code = pthread_attr_setstacksize(&thread_attr, MCSAT_PARALLEL_WORKER_STACK_SIZE);
     if (code != 0) {
-      perror_fatal("pthread_attr_init");
+      perror_fatal("pthread_attr_setstacksize");
     }
-    code = pthread_attr_getstacksize(&thread_attr, &stack_size);
-    if (code != 0) {
-      perror_fatal("pthread_attr_getstacksize");
-    }
-    if (stack_size < MCSAT_PARALLEL_WORKER_STACK_SIZE) {
-      code = pthread_attr_setstacksize(&thread_attr, MCSAT_PARALLEL_WORKER_STACK_SIZE);
-      if (code != 0) {
-        perror_fatal("pthread_attr_setstacksize");
-      }
+  }
+
+  for (i = 0; i < worker_count; ++i) {
+    uint32_t j;
+
+    workers[i] = mcsat_new_worker_replica(mcsat, i);
+    mcsat_process_registration_queue(workers[i]);
+    mcsat_reset_shared_lemma_session(workers[i], session);
+    if (mcsat->pending_model_hint_model != NULL && mcsat->pending_model_hint_filter.size > 0) {
+      mcsat_set_model_hint_local(workers[i],
+                                 mcsat->pending_model_hint_model,
+                                 mcsat->pending_model_hint_filter.size,
+                                 mcsat->pending_model_hint_filter.data);
     }
 
-    for (i = 1; i < worker_count; ++i) {
-      workers[i] = mcsat_new_worker_replica(mcsat, i);
-      mcsat_process_registration_queue(workers[i]);
-      if (i == 1) {
-        /*
-         * Workers share the liburcu-backed variable and lemma registries, but
-         * terms are still serialized while the underlying Yices term table
-         * remains mutable.
-         */
-        session = workers[i]->shared_state == NULL ? 0 : mcsat_shared_state_new_lemma_session(workers[i]->shared_state);
-      }
-      mcsat_reset_shared_lemma_session(workers[i], session);
-      if (mcsat->pending_model_hint_model != NULL && mcsat->pending_model_hint_filter.size > 0) {
-        mcsat_set_model_hint_local(workers[i],
-                                   mcsat->pending_model_hint_model,
-                                   mcsat->pending_model_hint_filter.size,
-                                   mcsat->pending_model_hint_filter.data);
-      }
-      tasks[i - 1].worker = workers[i];
-      tasks[i - 1].params = params;
-      tasks[i - 1].mdl = mdl;
-      tasks[i - 1].n_assumptions = n_assumptions;
-      tasks[i - 1].assumptions = assumptions;
+    for (j = 0; j < split_var_count; ++j) {
+      term_t atom = variable_db_get_term(mcsat->var_db, split_vars.data[j]);
+      split_assumptions[i * split_var_count + j] = ((i >> j) & 1u) ? atom : opposite_term(atom);
     }
 
-    pthread_mutex_lock(&parallel->result_lock);
-    parallel->worker_count = worker_count;
-    pthread_mutex_unlock(&parallel->result_lock);
+    tasks[i].worker = workers[i];
+    tasks[i].params = params;
+    tasks[i].mdl = NULL;
+    tasks[i].n_assumptions = split_var_count;
+    tasks[i].assumptions = split_var_count == 0 ? NULL : split_assumptions + i * split_var_count;
+  }
 
-    for (i = 1; i < worker_count; ++i) {
-      if (pthread_create(&threads[i - 1], &thread_attr, mcsat_parallel_worker_main, &tasks[i - 1]) != 0) {
-        perror_fatal("pthread_create");
-      }
+  for (i = 0; i < worker_count; ++i) {
+    if (pthread_create(&threads[i], &thread_attr, mcsat_parallel_worker_main, &tasks[i]) != 0) {
+      perror_fatal("pthread_create");
     }
-    pthread_attr_destroy(&thread_attr);
+  }
+  pthread_attr_destroy(&thread_attr);
 
-    for (i = 1; i < worker_count; ++i) {
-      pthread_join(threads[i - 1], NULL);
-    }
+  for (i = 0; i < worker_count; ++i) {
+    pthread_join(threads[i], NULL);
   }
 
   pthread_mutex_lock(&parallel->result_lock);
@@ -3665,6 +3986,8 @@ void mcsat_solve_parallel(mcsat_solver_t* mcsat, const param_t *params, model_t*
   safe_free(tasks);
   safe_free(threads);
   safe_free(workers);
+  safe_free(split_assumptions);
+  delete_ivector(&split_vars);
   mcsat_clear_pending_model_hint(mcsat);
   mcsat_shared_state_unregister_thread();
 }
