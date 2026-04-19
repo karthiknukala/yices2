@@ -492,8 +492,8 @@ static void explain_eq(egraph_t *egraph, occ_t x, occ_t y, ivector_t *v) {
 	return;
       }
 
-      if (literal_value(egraph->core, l) == VAL_TRUE) {
-	a = get_bvar_antecedent(egraph->core, var_of(l));
+      if (egraph_literal_value(egraph, l) == VAL_TRUE) {
+	a = egraph_bvar_antecedent(egraph, var_of(l));
 	if (antecedent_tag(a) == generic_tag) {
 	  // i.e., l was propagated by the Egraph
 	  id = i32_of_expl(generic_antecedent(a));
@@ -1811,5 +1811,4 @@ int32_t egraph_get_reconcile_edge(egraph_t *egraph, int32_t source, int32_t i) {
 
   return egraph_search_for_reconcile_edge(egraph, source);
 }
-
 

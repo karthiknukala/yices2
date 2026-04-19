@@ -2728,6 +2728,10 @@ static bool boolean_propagation(smt_core_t *s) {
   return true;
 }
 
+bool smt_boolean_propagate(smt_core_t *s) {
+  return boolean_propagation(s);
+}
+
 
 
 /**************************************
@@ -3652,6 +3656,21 @@ static void resolve_conflict(smt_core_t *s) {
   add_learned_clause(s, s->buffer.size, s->buffer.data);
 }
 
+bool smt_resolve_conflict(smt_core_t *s) {
+  assert(s->inconsistent);
+
+  resolve_conflict(s);
+  if (s->inconsistent) {
+    reset_lemma_queue(&s->lemmas);
+    s->status = YICES_STATUS_UNSAT;
+    return false;
+  }
+
+  s->cla_inc *= s->inv_cla_decay;
+  s->heap.act_increment *= s->heap.inv_act_decay;
+  return true;
+}
+
 
 
 
@@ -4483,6 +4502,14 @@ static void add_all_lemmas(smt_core_t *s) {
   reset_lemma_queue(&s->lemmas);
 }
 
+bool smt_has_pending_lemmas(smt_core_t *s) {
+  return ! empty_lemma_queue(&s->lemmas);
+}
+
+void smt_integrate_pending_lemmas(smt_core_t *s) {
+  add_all_lemmas(s);
+}
+
 
 /*********************************
  *  QUANTIFIER INSTANCE CLAUSES  *
@@ -5213,6 +5240,15 @@ static void simplify_clause_database(smt_core_t *s) {
     2 * s->nb_bin_clauses;
 }
 
+void smt_maybe_simplify_clause_database(smt_core_t *s) {
+  if (s->status == YICES_STATUS_SEARCHING &&
+      s->decision_level == s->base_level &&
+      s->stack.top > s->simplify_bottom &&
+      s->stats.propagations >= s->simplify_props + s->simplify_threshold) {
+    simplify_clause_database(s);
+  }
+}
+
 
 
 
@@ -5901,6 +5937,15 @@ static void delete_irrelevant_variables(smt_core_t *s) {
   }
 }
 
+bool smt_has_pending_gc(smt_core_t *s) {
+  return s->cp_flag;
+}
+
+void smt_collect_pending_gc(smt_core_t *s) {
+  delete_irrelevant_variables(s);
+  s->cp_flag = false;
+}
+
 
 
 
@@ -6085,6 +6130,10 @@ void stop_search(smt_core_t *s) {
   if (s->status == YICES_STATUS_SEARCHING) {
     s->status = YICES_STATUS_INTERRUPTED;
   }
+}
+
+void smt_set_status(smt_core_t *s, smt_status_t status) {
+  s->status = status;
 }
 
 

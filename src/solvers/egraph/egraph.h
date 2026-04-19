@@ -22,6 +22,7 @@
 #include <assert.h>
 
 #include "solvers/egraph/egraph_explanations.h"
+#include "solvers/egraph/sat_kernel.h"
 #include "solvers/egraph/egraph_types.h"
 #include "solvers/egraph/egraph_utils.h"
 
@@ -46,7 +47,7 @@
  * Initialize: allocate internal tables and data structures
  * - ttbl = attached type table
  * - all have default sizes, defined in egraph_types.h
- * - no core is attached yet.
+ * - no SAT kernel is attached yet.
  */
 extern void init_egraph(egraph_t *egraph, type_table_t *ttbl);
 
@@ -105,11 +106,16 @@ extern th_smt_interface_t *egraph_smt_interface(egraph_t *egraph);
 
 
 /*
- * Attach the SAT backend:
- * - the backend must be initialized with the egraph, and the interface
- *   descriptors returned by the two functions above
- * - until the backend is attached, the egraph can't be used
+ * Attach a SAT-kernel object:
+ * - the kernel must already wrap a concrete Boolean backend initialized
+ *   with the egraph interfaces returned above
+ * - until a SAT kernel is attached, the egraph can't be used
  * - the internal egraph boolean constant is constructed at this point
+ */
+extern void egraph_attach_sat_kernel(egraph_t *egraph, const sat_kernel_t *kernel);
+
+/*
+ * Compatibility wrapper for the embedded smt_core SAT backend.
  */
 extern void egraph_attach_core(egraph_t *egraph, smt_core_t *core);
 
@@ -125,8 +131,9 @@ extern void delete_egraph(egraph_t *egraph);
 
 /*
  * SAT-backend services exposed by the central egraph kernel.
- * These are thin wrappers over the embedded SAT backend for now, but the
- * ownership boundary is the egraph rather than the raw smt_core_t.
+ * These expose a SAT-kernel surface owned by the egraph orchestrator:
+ * clause database operations, assignment/trail access, and the primitives
+ * needed to run BCP, learn clauses, and backjump.
  */
 extern bvar_t egraph_new_boolean_variable(egraph_t *egraph);
 extern void egraph_attach_sat_atom_to_bvar(egraph_t *egraph, etype_t owner, bvar_t v, void *atom);
@@ -155,104 +162,109 @@ extern void egraph_print_clauses(FILE *f, egraph_t *egraph);
 extern void egraph_print_boolean_assignment(FILE *f, egraph_t *egraph);
 
 static inline bool egraph_bvar_has_atom(egraph_t *egraph, bvar_t v) {
-  assert(egraph != NULL && egraph->core != NULL);
-  return bvar_has_atom(egraph->core, v);
+  assert(egraph != NULL && sat_kernel_is_attached(&egraph->sat));
+  return sat_kernel_api(&egraph->sat)->bvar_has_atom(sat_kernel_backend(&egraph->sat), v);
 }
 
 static inline void *egraph_bvar_atom(egraph_t *egraph, bvar_t v) {
   void *atom;
 
-  assert(egraph != NULL && egraph->core != NULL);
-  atom = bvar_atom(egraph->core, v);
+  assert(egraph != NULL && sat_kernel_is_attached(&egraph->sat));
+  atom = sat_kernel_api(&egraph->sat)->bvar_atom(sat_kernel_backend(&egraph->sat), v);
   if (atom != NULL && atom_tag(atom) == HUB_ATM_TAG) {
     return ((hub_atom_t *) untag_atom(atom))->payload;
   }
   return atom;
 }
 
+static inline antecedent_t egraph_bvar_antecedent(egraph_t *egraph, bvar_t v) {
+  assert(egraph != NULL && sat_kernel_is_attached(&egraph->sat));
+  return sat_kernel_api(&egraph->sat)->bvar_antecedent(sat_kernel_backend(&egraph->sat), v);
+}
+
 static inline bval_t egraph_bvar_value(egraph_t *egraph, bvar_t v) {
-  assert(egraph != NULL && egraph->core != NULL);
-  return bvar_value(egraph->core, v);
+  assert(egraph != NULL && sat_kernel_is_attached(&egraph->sat));
+  return sat_kernel_api(&egraph->sat)->bvar_value(sat_kernel_backend(&egraph->sat), v);
 }
 
 static inline bval_t egraph_bvar_base_value(egraph_t *egraph, bvar_t v) {
-  assert(egraph != NULL && egraph->core != NULL);
-  return bvar_base_value(egraph->core, v);
+  assert(egraph != NULL && sat_kernel_is_attached(&egraph->sat));
+  return sat_kernel_api(&egraph->sat)->bvar_base_value(sat_kernel_backend(&egraph->sat), v);
 }
 
 static inline bval_t egraph_literal_value(egraph_t *egraph, literal_t l) {
-  assert(egraph != NULL && egraph->core != NULL);
-  return literal_value(egraph->core, l);
+  assert(egraph != NULL && sat_kernel_is_attached(&egraph->sat));
+  return sat_kernel_api(&egraph->sat)->literal_value(sat_kernel_backend(&egraph->sat), l);
 }
 
 static inline bval_t egraph_literal_base_value(egraph_t *egraph, literal_t l) {
-  assert(egraph != NULL && egraph->core != NULL);
-  return literal_base_value(egraph->core, l);
+  assert(egraph != NULL && sat_kernel_is_attached(&egraph->sat));
+  return sat_kernel_api(&egraph->sat)->literal_base_value(sat_kernel_backend(&egraph->sat), l);
 }
 
 static inline bool egraph_literal_is_assigned(egraph_t *egraph, literal_t l) {
-  assert(egraph != NULL && egraph->core != NULL);
-  return literal_is_assigned(egraph->core, l);
+  assert(egraph != NULL && sat_kernel_is_attached(&egraph->sat));
+  return sat_kernel_api(&egraph->sat)->literal_is_assigned(sat_kernel_backend(&egraph->sat), l);
 }
 
 static inline tracer_t *egraph_trace(egraph_t *egraph) {
-  assert(egraph != NULL && egraph->core != NULL);
-  return egraph->core->trace;
+  assert(egraph != NULL && sat_kernel_is_attached(&egraph->sat));
+  return sat_kernel_api(&egraph->sat)->trace(sat_kernel_backend(&egraph->sat));
 }
 
 static inline gate_table_t *egraph_gate_table(egraph_t *egraph) {
-  assert(egraph != NULL && egraph->core != NULL);
-  return get_gate_table(egraph->core);
+  assert(egraph != NULL && sat_kernel_is_attached(&egraph->sat));
+  return sat_kernel_api(&egraph->sat)->gate_table(sat_kernel_backend(&egraph->sat));
 }
 
 static inline uint32_t egraph_decision_level(egraph_t *egraph) {
-  assert(egraph != NULL && egraph->core != NULL);
-  return smt_decision_level(egraph->core);
+  assert(egraph != NULL && sat_kernel_is_attached(&egraph->sat));
+  return sat_kernel_api(&egraph->sat)->decision_level(sat_kernel_backend(&egraph->sat));
 }
 
 static inline uint32_t egraph_base_level(egraph_t *egraph) {
-  assert(egraph != NULL && egraph->core != NULL);
-  return smt_base_level(egraph->core);
+  assert(egraph != NULL && sat_kernel_is_attached(&egraph->sat));
+  return sat_kernel_api(&egraph->sat)->base_level(sat_kernel_backend(&egraph->sat));
 }
 
 static inline smt_status_t egraph_status(egraph_t *egraph) {
-  assert(egraph != NULL && egraph->core != NULL);
-  return smt_status(egraph->core);
+  assert(egraph != NULL && sat_kernel_is_attached(&egraph->sat));
+  return sat_kernel_api(&egraph->sat)->status(sat_kernel_backend(&egraph->sat));
 }
 
 static inline uint64_t egraph_num_decisions(egraph_t *egraph) {
-  assert(egraph != NULL && egraph->core != NULL);
-  return num_decisions(egraph->core);
+  assert(egraph != NULL && sat_kernel_is_attached(&egraph->sat));
+  return sat_kernel_api(&egraph->sat)->num_decisions(sat_kernel_backend(&egraph->sat));
 }
 
 static inline uint64_t egraph_total_conflicts(egraph_t *egraph) {
-  assert(egraph != NULL && egraph->core != NULL);
-  return num_conflicts(egraph->core);
+  assert(egraph != NULL && sat_kernel_is_attached(&egraph->sat));
+  return sat_kernel_api(&egraph->sat)->num_conflicts(sat_kernel_backend(&egraph->sat));
 }
 
 static inline uint32_t egraph_num_boolean_vars(egraph_t *egraph) {
-  assert(egraph != NULL && egraph->core != NULL);
-  return num_vars(egraph->core);
+  assert(egraph != NULL && sat_kernel_is_attached(&egraph->sat));
+  return sat_kernel_api(&egraph->sat)->num_vars(sat_kernel_backend(&egraph->sat));
 }
 
 static inline uint32_t egraph_num_unit_clauses(egraph_t *egraph) {
-  assert(egraph != NULL && egraph->core != NULL);
-  return num_unit_clauses(egraph->core);
+  assert(egraph != NULL && sat_kernel_is_attached(&egraph->sat));
+  return sat_kernel_api(&egraph->sat)->num_unit_clauses(sat_kernel_backend(&egraph->sat));
 }
 
 static inline uint32_t egraph_num_binary_clauses(egraph_t *egraph) {
-  assert(egraph != NULL && egraph->core != NULL);
-  return num_binary_clauses(egraph->core);
+  assert(egraph != NULL && sat_kernel_is_attached(&egraph->sat));
+  return sat_kernel_api(&egraph->sat)->num_binary_clauses(sat_kernel_backend(&egraph->sat));
 }
 
 static inline uint32_t egraph_num_problem_clauses(egraph_t *egraph) {
-  assert(egraph != NULL && egraph->core != NULL);
-  return num_prob_clauses(egraph->core);
+  assert(egraph != NULL && sat_kernel_is_attached(&egraph->sat));
+  return sat_kernel_api(&egraph->sat)->num_prob_clauses(sat_kernel_backend(&egraph->sat));
 }
 
 static inline uint64_t egraph_num_problem_literals(egraph_t *egraph) {
-  assert(egraph != NULL && egraph->core != NULL);
-  return num_prob_literals(egraph->core);
+  assert(egraph != NULL && sat_kernel_is_attached(&egraph->sat));
+  return sat_kernel_api(&egraph->sat)->num_prob_literals(sat_kernel_backend(&egraph->sat));
 }
 
 /*

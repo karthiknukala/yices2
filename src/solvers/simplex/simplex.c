@@ -10921,6 +10921,10 @@ void delete_simplex_solver(simplex_solver_t *solver) {
  *   INTERFACE WITH THE EGRAPH   *
  ********************************/
 
+static bool simplex_process_var_eq(simplex_solver_t *solver, thvar_t x1, thvar_t x2, int32_t id);
+static void simplex_process_var_diseq(simplex_solver_t *solver, thvar_t x1, thvar_t x2);
+static void simplex_process_var_distinct(simplex_solver_t *solver, uint32_t n, thvar_t *a, composite_t *hint);
+
 /*
  * Save egraph assertions in the assertion queue
  * - x1 and x2: become equal after the egraph merge two classes c1 and c2
@@ -10929,7 +10933,14 @@ void delete_simplex_solver(simplex_solver_t *solver) {
  */
 void simplex_assert_var_eq(simplex_solver_t *solver, thvar_t x1, thvar_t x2, int32_t id) {
   assert(arith_var_has_eterm(&solver->vtbl, x1) && arith_var_has_eterm(&solver->vtbl, x2));
-  eassertion_push_eq(&solver->egraph_queue, x1, x2, id);
+  if (! solver->tableau_ready) {
+    simplex_assert_vareq_axiom(solver, x1, x2, true);
+    if (solver->unsat_before_search) {
+      egraph_record_empty_conflict(solver->egraph);
+    }
+  } else {
+    (void) simplex_process_var_eq(solver, x1, x2, id);
+  }
 
 #if TRACE
   printf("\n---> Simplex: received egraph equality: ");
@@ -10951,7 +10962,8 @@ void simplex_assert_var_eq(simplex_solver_t *solver, thvar_t x1, thvar_t x2, int
 
 void simplex_assert_var_diseq(simplex_solver_t *solver, thvar_t x1, thvar_t x2, composite_t *hint) {
   assert(arith_var_has_eterm(&solver->vtbl, x1) && arith_var_has_eterm(&solver->vtbl, x2));
-  eassertion_push_diseq(&solver->egraph_queue, x1, x2, hint);
+  (void) hint;
+  simplex_process_var_diseq(solver, x1, x2);
 
 #if TRACE
   printf("---> Simplex: received egraph disequality: ");
@@ -10973,7 +10985,7 @@ void simplex_assert_var_distinct(simplex_solver_t *solver, uint32_t n, thvar_t *
   }
 #endif
 
-  eassertion_push_distinct(&solver->egraph_queue, n, a, hint);
+  simplex_process_var_distinct(solver, n, a, hint);
 }
 
 
@@ -12791,16 +12803,23 @@ static void simplex_ingest_hub_fact(simplex_solver_t *solver, egraph_fact_kind_t
   switch (kind) {
   case EGRAPH_FACT_LITERAL:
     assert(n == 1);
-    assert(payload != NULL);
     if (! simplex_assert_atom(solver, payload, a[0])) {
       assert(false);
     }
     break;
 
   case EGRAPH_FACT_VAR_EQ:
+    assert(n == 2);
+    simplex_assert_var_eq(solver, a[0], a[1], id);
+    break;
+
   case EGRAPH_FACT_VAR_DISEQ:
+    assert(n == 2);
+    simplex_assert_var_diseq(solver, a[0], a[1], hint);
+    break;
+
   case EGRAPH_FACT_VAR_DISTINCT:
-    egraph_fact_push_words(&solver->egraph_queue, kind, n, a, id, hint, payload);
+    simplex_assert_var_distinct(solver, n, (thvar_t *) a, hint);
     break;
 
   default:
@@ -12812,12 +12831,10 @@ static void simplex_ingest_hub_fact(simplex_solver_t *solver, egraph_fact_kind_t
 static bool simplex_has_pending_hub_work(simplex_solver_t *solver) {
   if (! solver->tableau_ready) {
     return solver->unsat_before_search ||
-      solver->assertion_queue.prop_ptr < solver->assertion_queue.top ||
-      eassertion_queue_is_nonempty(&solver->egraph_queue);
+      solver->assertion_queue.prop_ptr < solver->assertion_queue.top;
   }
 
   return solver->assertion_queue.prop_ptr < solver->assertion_queue.top ||
-    eassertion_queue_is_nonempty(&solver->egraph_queue) ||
     ! int_heap_is_empty(&solver->infeasible_vars) ||
     solver->bstack.prop_ptr < solver->bstack.top;
 }

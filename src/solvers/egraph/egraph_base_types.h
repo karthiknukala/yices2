@@ -458,6 +458,7 @@ enum {
  * - payload may legitimately be NULL (e.g., index 0 packed as a pointer)
  */
 typedef struct hub_atom_s {
+  eterm_t reified_eterm; // auxiliary egraph Boolean term for this atom
   etype_t owner;
   void *payload;
 } hub_atom_t;

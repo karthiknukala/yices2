@@ -7640,7 +7640,9 @@ void bv_solver_assert_var_eq(bv_solver_t *solver, thvar_t x, thvar_t y, int32_t 
     assert(solver->decision_level == solver->base_level);
     bv_solver_assert_eq_axiom(solver, x, y, true);
   } else {
-    eassertion_push_eq(&solver->egraph_queue, x, y, id);
+    if (! bv_solver_bvequiv_conflict(solver, x, y, id)) {
+      bv_solver_bvequiv_lemma(solver, x, y);
+    }
   }
 }
 
@@ -8856,12 +8858,7 @@ static void bv_solver_ingest_hub_fact(bv_solver_t *solver, egraph_fact_kind_t ki
     assert(n == 2);
     x = a[0];
     y = a[1];
-    if (! solver->bitblasted) {
-      assert(solver->decision_level == solver->base_level);
-      bv_solver_assert_eq_axiom(solver, x, y, true);
-    } else {
-      egraph_fact_push_words(&solver->egraph_queue, kind, n, a, id, NULL, NULL);
-    }
+    bv_solver_assert_var_eq(solver, x, y, id);
     break;
 
   case EGRAPH_FACT_VAR_DISEQ:
@@ -8893,7 +8890,8 @@ static void bv_solver_ingest_hub_fact(bv_solver_t *solver, egraph_fact_kind_t ki
 }
 
 static bool bv_solver_has_pending_hub_work(bv_solver_t *solver) {
-  return eassertion_queue_is_nonempty(&solver->egraph_queue);
+  (void) solver;
+  return false;
 }
 
 static bool bv_solver_run_hub_propagation(bv_solver_t *solver) {

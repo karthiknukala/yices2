@@ -241,6 +241,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <assert.h>
+#include <stdio.h>
 
 #include "model/abstract_values.h"
 #include "model/concrete_values.h"
@@ -1184,6 +1185,95 @@ typedef struct th_egraph_interface_s {
 } th_egraph_interface_t;
 
 
+/*
+ * SAT-backend interface owned by the egraph orchestrator.
+ * This factors the Boolean engine behind an explicit contract so the egraph
+ * can drive it as a backend rather than naming smt_core primitives directly.
+ */
+typedef struct th_sat_interface_s {
+  tracer_t *(*trace)(void *backend);
+  gate_table_t *(*gate_table)(void *backend);
+  smt_status_t (*status)(void *backend);
+  uint32_t (*decision_level)(void *backend);
+  uint32_t (*base_level)(void *backend);
+  uint64_t (*num_decisions)(void *backend);
+  uint64_t (*num_random_decisions)(void *backend);
+  uint64_t (*num_conflicts)(void *backend);
+  uint32_t (*num_vars)(void *backend);
+  uint32_t (*num_unit_clauses)(void *backend);
+  uint32_t (*num_binary_clauses)(void *backend);
+  uint32_t (*num_prob_clauses)(void *backend);
+  uint64_t (*num_prob_literals)(void *backend);
+  uint32_t (*num_learned_clauses)(void *backend);
+  uint64_t (*num_learned_literals)(void *backend);
+  double (*avg_learned_clause_size)(void *backend);
+  uint64_t (*num_learned_clauses_deleted)(void *backend);
+  bool (*has_assumptions)(void *backend);
+  literal_t (*get_next_assumption)(void *backend);
+  void (*save_conflicting_assumption)(void *backend, literal_t l);
+  bool (*inconsistent)(void *backend);
+  literal_t *(*trail_literals)(void *backend);
+  uint32_t (*trail_top)(void *backend);
+  uint32_t (*trail_theory_ptr)(void *backend);
+  bvar_t (*new_boolvar)(void *backend);
+  void (*attach_atom)(void *backend, bvar_t v, void *atom);
+  void (*remove_atom)(void *backend, bvar_t v);
+  bool (*bvar_has_atom)(void *backend, bvar_t v);
+  void *(*bvar_atom)(void *backend, bvar_t v);
+  antecedent_t (*bvar_antecedent)(void *backend, bvar_t v);
+  bval_t (*bvar_value)(void *backend, bvar_t v);
+  bval_t (*bvar_base_value)(void *backend, bvar_t v);
+  bval_t (*literal_value)(void *backend, literal_t l);
+  bval_t (*literal_base_value)(void *backend, literal_t l);
+  bool (*literal_is_assigned)(void *backend, literal_t l);
+  void (*add_clause)(void *backend, uint32_t n, literal_t *a);
+  void (*add_empty_clause)(void *backend);
+  void (*add_unit_clause)(void *backend, literal_t l);
+  void (*add_binary_clause)(void *backend, literal_t l1, literal_t l2);
+  void (*add_ternary_clause)(void *backend, literal_t l1, literal_t l2, literal_t l3);
+  void (*implied_literal)(void *backend, literal_t l, antecedent_t a);
+  void (*propagate_literal)(void *backend, literal_t l, void *expl);
+  void (*record_empty_conflict)(void *backend);
+  void (*record_unit_conflict)(void *backend, literal_t l);
+  void (*record_binary_conflict)(void *backend, literal_t l1, literal_t l2);
+  void (*record_ternary_conflict)(void *backend, literal_t l1, literal_t l2, literal_t l3);
+  void (*record_conflict)(void *backend, literal_t *a);
+  uint32_t (*add_quant_lemmas)(void *backend, literal_t en, ivector_t *units);
+  void (*build_unsat_core)(void *backend, ivector_t *v);
+  void (*bump_conflicts)(void *backend, uint64_t delta);
+  void (*collect_free_bool_vars)(void *backend, free_bool_vars_t *fv);
+  void (*print_binary_clauses)(FILE *f, void *backend);
+  void (*print_problem_clauses)(FILE *f, void *backend);
+  void (*print_learned_clauses)(FILE *f, void *backend);
+  void (*print_lemmas)(FILE *f, void *backend);
+  void (*print_clauses)(FILE *f, void *backend);
+  void (*print_boolean_assignment)(FILE *f, void *backend);
+  void (*start_search)(void *backend, uint32_t n, const literal_t *a);
+  bool (*boolean_propagate)(void *backend);
+  bool (*resolve_conflict)(void *backend);
+  bool (*has_pending_lemmas)(void *backend);
+  void (*integrate_pending_lemmas)(void *backend);
+  bool (*has_pending_gc)(void *backend);
+  void (*collect_pending_gc)(void *backend);
+  void (*maybe_simplify_clause_database)(void *backend);
+  void (*set_status)(void *backend, smt_status_t status);
+  void (*restart)(void *backend);
+  void (*decide_literal)(void *backend, literal_t l);
+  literal_t (*select_unassigned_literal)(void *backend);
+  void (*reduce_clause_database)(void *backend);
+} th_sat_interface_t;
+
+/*
+ * SAT kernel object owned by the egraph.
+ * This wraps one concrete Boolean backend instance behind the factored
+ * SAT interface so the egraph can remain backend-agnostic.
+ */
+typedef struct sat_kernel_s {
+  void *backend;
+  th_sat_interface_t *api;
+} sat_kernel_t;
+
+
 
 
 /*
@@ -1347,9 +1437,11 @@ typedef struct egraph_s egraph_t;
 
 struct egraph_s {
   /*
-   * Attached smt_core + type table
+   * Attached SAT kernel + type table
+   * - sat wraps the concrete Boolean backend behind the factored SAT
+   *   contract used by the egraph orchestrator
    */
-  smt_core_t *core;
+  sat_kernel_t sat;
   type_table_t *types;
 
   /*
@@ -1464,6 +1556,7 @@ struct egraph_s {
   ivector_t aux_buffer;       // generic buffer used in term construction
   ivector_t clause_buffer;    // temporary buffer for clause simplification/normalization
   int_stack_t istack;         // generic stack for recursive processing
+  egraph_fact_queue_t satellite_inbox[NUM_SATELLITES]; // hub-owned pending facts per satellite
   egraph_fact_queue_t backend_outbox; // theory-produced literals/lemmas/conflicts
   ivector_t backend_buffer;   // persistent storage for queued conflict clauses
   uint32_t sat_sync_ptr;      // next SAT-trail literal to ingest directly from the backend

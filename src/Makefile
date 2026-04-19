@@ -196,6 +196,8 @@ core_src_c := \
 	solvers/egraph/egraph_assertion_queues.c \
 	solvers/egraph/egraph.c \
 	solvers/egraph/egraph_explanations.c \
+	solvers/egraph/sat_kernel.c \
+	solvers/egraph/smt_core_sat.c \
 	solvers/egraph/egraph_utils.c \
 	solvers/egraph/theory_explanations.c \
 	solvers/floyd_warshall/dl_vartable.c \

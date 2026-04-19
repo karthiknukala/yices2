@@ -1788,6 +1788,18 @@ extern void remove_irrelevant_learned_clauses(smt_core_t *s);
  */
 extern void smt_checkpoint(smt_core_t *s);
 
+/*
+ * Primitive SAT-kernel operations used by the egraph orchestrator.
+ */
+extern bool smt_boolean_propagate(smt_core_t *s);
+extern bool smt_resolve_conflict(smt_core_t *s);
+extern bool smt_has_pending_lemmas(smt_core_t *s);
+extern void smt_integrate_pending_lemmas(smt_core_t *s);
+extern bool smt_has_pending_gc(smt_core_t *s);
+extern void smt_collect_pending_gc(smt_core_t *s);
+extern void smt_maybe_simplify_clause_database(smt_core_t *s);
+extern void smt_set_status(smt_core_t *s, smt_status_t status);
+
 
 /*
  * Main solving function: process until a stable state is reached

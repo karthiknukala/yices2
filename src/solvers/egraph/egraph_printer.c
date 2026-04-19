@@ -24,6 +24,7 @@
 
 #include "io/type_printer.h"
 #include "solvers/cdcl/smt_core_printer.h"
+#include "solvers/egraph/egraph.h"
 #include "solvers/egraph/egraph_printer.h"
 #include "solvers/egraph/egraph_utils.h"
 #include "solvers/egraph/theory_explanations.h"
@@ -411,8 +412,8 @@ void print_egraph_conflict(FILE *f, egraph_t *egraph, ivector_t *expl_vector) {
   for (i=0; i<n; i++) {
     l = expl_vector->data[i];
     v = var_of(l);
-    if (bvar_has_atom(egraph->core, v)) {
-      atom = bvar_atom(egraph->core, v);
+    if (egraph_bvar_has_atom(egraph, v)) {
+      atom = egraph_bvar_atom(egraph, v);
       switch (atom_tag(atom)) {
       case EGRAPH_ATM_TAG:
 	if (is_neg(l)) fputs("(not ", f);
@@ -623,8 +624,8 @@ void print_egraph_atom_of_literal(FILE *f, egraph_t *egraph, literal_t l) {
   bvar_t v;
 
   v = var_of(l);
-  assert(bvar_has_atom(egraph->core, v));
-  atom = bvar_atom(egraph->core, v);
+  assert(egraph_bvar_has_atom(egraph, v));
+  atom = egraph_bvar_atom(egraph, v);
   assert(atom_tag(atom) == EGRAPH_ATM_TAG);
   if (is_neg(l)) {
     fputs("(not ", f);
@@ -681,7 +682,7 @@ void print_egraph_terms(FILE *f, egraph_t *egraph) {
         break;
       case ETYPE_BOOL:
         fprintf(f, "lit(p!%"PRId32")\t\t", x);
-        print_bval(f, bvar_value(egraph->core, x));
+        print_bval(f, egraph_bvar_value(egraph, x));
         break;
       case ETYPE_TUPLE:
         fprintf(f, "tup(g!%"PRId32")", x);
@@ -765,18 +766,18 @@ void print_egraph_root_classes_details(FILE *f, egraph_t *egraph) {
  * All atoms
  */
 void print_egraph_atoms(FILE *f, egraph_t *egraph) {
-  smt_core_t *core;
   uint32_t v, n;
   void *atm;
 
-  core = egraph->core;
-  if (core != NULL) {
-    n = num_vars(core);
+  if (sat_kernel_is_attached(&egraph->sat)) {
+    n = egraph_num_boolean_vars(egraph);
     for (v=0; v<n; v++) {
-      atm = bvar_atom(core, v);
-      if (atm != NULL && atom_tag(atm) == EGRAPH_ATM_TAG) {
-        print_egraph_atom(f, egraph, untag_atom(atm));
-        fputc('\n', f);
+      if (egraph_bvar_has_atom(egraph, v)) {
+        atm = egraph_bvar_atom(egraph, v);
+        if (atm != NULL && atom_tag(atm) == EGRAPH_ATM_TAG) {
+          print_egraph_atom(f, egraph, untag_atom(atm));
+          fputc('\n', f);
+        }
       }
     }
   }
@@ -903,5 +904,3 @@ void print_egraph_congruence_roots(FILE *f, egraph_t *egraph) {
 
   delete_pvector(&v);
 }
-
-

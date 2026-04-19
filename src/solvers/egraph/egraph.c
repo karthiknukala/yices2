@@ -32,6 +32,8 @@
 #include "solvers/egraph/egraph_assertion_queues.h"
 #include "solvers/egraph/egraph_explanations.h"
 #include "solvers/egraph/egraph_utils.h"
+#include "solvers/egraph/sat_kernel.h"
+#include "solvers/egraph/smt_core_sat.h"
 #include "solvers/egraph/theory_explanations.h"
 #include "utils/bit_tricks.h"
 #include "utils/hash_functions.h"
@@ -62,6 +64,14 @@
  * Select variant implementations
  */
 #define CONSERVATIVE_DISEQ_AXIOMS 0
+
+/*
+ * SAT backend helpers.
+ * These are defined in the orchestrator-services section but used
+ * earlier by the core propagation/search code.
+ */
+static inline void *egraph_backend(egraph_t *egraph);
+static inline th_sat_interface_t *egraph_sat_api(egraph_t *egraph);
 
 
 /*****************
@@ -1001,23 +1011,25 @@ static void reset_egraph_model(egraph_model_t *mdl) {
 
 /*
  * Create atom <v, t> and add it to the core
- * - v must be a boolean variable in egraph->core, with no atom attached
+ * - v must be a boolean variable in the attached SAT backend, with no atom attached
  * - t must be a boolean term in egraph
  */
 static void create_egraph_atom(egraph_t *egraph, bvar_t v, eterm_t t) {
   atom_t *atom;
-  smt_core_t *core;
+  th_sat_interface_t *sat;
+  void *backend;
 
-  core = egraph->core;
+  sat = egraph_sat_api(egraph);
+  backend = egraph_backend(egraph);
 
-  assert(core != NULL && bvar_atom(core, v) == NULL);
+  assert(sat->bvar_atom(backend, v) == NULL);
 
   atom = (atom_t *) objstore_alloc(&egraph->atom_store);
   atom->eterm = t;
   atom->boolvar = v;
   atom->next = atom;
 
-  attach_atom_to_bvar(core, v, tagged_egraph_atom(atom));
+  sat->attach_atom(backend, v, tagged_egraph_atom(atom));
 
   egraph->natoms ++;
 }
@@ -1031,6 +1043,7 @@ static hub_atom_t *create_hub_atom_binding(egraph_t *egraph, etype_t owner, void
   hub_atom_t *binding;
 
   binding = (hub_atom_t *) objstore_alloc(&egraph->hub_atom_store);
+  binding->reified_eterm = null_eterm;
   binding->owner = owner;
   binding->payload = payload;
 
@@ -1099,16 +1112,14 @@ static inline void split_atom_lists(atom_t *atom1, atom_t *atom2) {
  * Delete atom and remove it from the core.
  */
 static void delete_egraph_atom(egraph_t *egraph, atom_t *atom) {
-  smt_core_t *core;
   bvar_t v;
 
-  core = egraph->core;
   v = atom->boolvar;
 
-  assert(core != NULL && bvar_atom(core, v) == tagged_egraph_atom(atom));
+  assert(egraph_bvar_atom(egraph, v) == atom);
   assert(atom->next == atom);
 
-  remove_bvar_atom(core, v);
+  egraph_remove_bvar_atom(egraph, v);
   objstore_free(&egraph->atom_store, atom);
 
   assert(egraph->natoms > 0);
@@ -1121,13 +1132,9 @@ static void delete_egraph_atom(egraph_t *egraph, atom_t *atom) {
  * return NULL if v has no atom or if the atom of v is not in an egraph atom
  */
 static atom_t *get_egraph_atom_for_bvar(egraph_t *egraph, bvar_t v) {
-  smt_core_t *core;
   void *a;
 
-  core = egraph->core;
-  assert(core != NULL);
-
-  a = bvar_atom(core, v);
+  a = egraph_bvar_atom(egraph, v);
   if (a != NULL && atom_tag(a) == EGRAPH_ATM_TAG) {
     return (atom_t *)a;
   }
@@ -2551,7 +2558,7 @@ static literal_t egraph_term2literal(egraph_t *egraph, eterm_t t) {
   bvar_t v;
 
   if (egraph_term_is_fresh(egraph, t)) {
-    v = create_boolean_variable(egraph->core);
+    v = egraph_new_boolean_variable(egraph);
     create_egraph_atom(egraph, v, t);
     egraph_set_term_real_type(egraph, t, bool_type(egraph->types));
     egraph_activate_term(egraph, t, ETYPE_BOOL, v);
@@ -2698,13 +2705,10 @@ static literal_t assert_distinct_def_clauses(egraph_t *egraph, uint32_t n, occ_t
   ivector_t *v;
   literal_t l;
   uint32_t i, p;
-  smt_core_t *core;
 
   v = &egraph->aux_buffer;
   expand_distinct(egraph, n, a, v);
-  core = egraph->core;
-  assert(core != NULL);
-  l = pos_lit(create_boolean_variable(core));
+  l = pos_lit(egraph_new_boolean_variable(egraph));
 
   // clauses for pos_lit(x) == (or (eq a[0] a[1]) .... (eq a[n-1] a[n]))
   p = v->size;
@@ -2985,7 +2989,7 @@ static void auto_activate(egraph_t *egraph, eterm_t u, type_t type) {
     break;
 
   case ETYPE_BOOL:
-    x = create_boolean_variable(egraph->core);
+    x = egraph_new_boolean_variable(egraph);
     create_egraph_atom(egraph, x, u);
     break;
 
@@ -3302,27 +3306,41 @@ eterm_t egraph_get_tuple_in_class(egraph_t *egraph, eterm_t t) {
  * If a new term is created, it is activated.
  */
 eterm_t egraph_bvar2term(egraph_t *egraph, bvar_t v) {
-  void *atom;
+  th_sat_interface_t *sat;
+  void *backend;
+  void *raw_atom;
+  hub_atom_t *binding;
   bvar_t aux;
   eterm_t t;
-  smt_core_t *core;
 
-  core = egraph->core;
-  assert(core != NULL);
+  sat = egraph_sat_api(egraph);
+  backend = egraph_backend(egraph);
+  raw_atom = sat->bvar_atom(backend, v);
+  if (raw_atom != NULL) {
+    switch (atom_tag(raw_atom)) {
+    case EGRAPH_ATM_TAG:
+      return ((atom_t *) untag_atom(raw_atom))->eterm;
 
-  atom = bvar_atom(core, v);
-  if (atom != NULL && atom_tag(atom) == EGRAPH_ATM_TAG) {
-    return ((atom_t *) atom)->eterm;
+    case HUB_ATM_TAG:
+      binding = (hub_atom_t *) untag_atom(raw_atom);
+      if (binding->reified_eterm != null_eterm) {
+        return binding->reified_eterm;
+      }
+      break;
+
+    default:
+      break;
+    }
   }
 
-  if (atom != NULL || bvar_is_assigned(core, v)) {
+  if (raw_atom != NULL || egraph_literal_is_assigned(egraph, pos_lit(v))) {
     /*
      * Either v is attached for an atom outisde the egraph
      * or v is already assigned. In this case, we replace v by a fresh
      * variable and assert aux == v in the core.
      */
     aux = v;
-    v = create_boolean_variable(core);
+    v = egraph_new_boolean_variable(egraph);
     // assert aux <=> v
     egraph_add_binary_clause(egraph, pos_lit(v), neg_lit(aux));
     egraph_add_binary_clause(egraph, neg_lit(v), pos_lit(aux));
@@ -3333,6 +3351,10 @@ eterm_t egraph_bvar2term(egraph_t *egraph, bvar_t v) {
   create_egraph_atom(egraph, v, t);
   egraph_set_term_real_type(egraph, t, bool_type(egraph->types));
   egraph_activate_term(egraph, t, ETYPE_BOOL, v);
+
+  if (raw_atom != NULL && atom_tag(raw_atom) == HUB_ATM_TAG) {
+    ((hub_atom_t *) untag_atom(raw_atom))->reified_eterm = t;
+  }
 
   return t;
 }
@@ -3637,11 +3659,17 @@ static void create_ackermann_lemma(egraph_t *egraph, composite_t *c1, composite_
  *  EQUALITY AND DISEQUALITIES BETWEEN THEORY VARIABLES  *
  ********************************************************/
 
+static inline bool egraph_backend_outbox_active(egraph_t *egraph);
 static bool egraph_flush_backend_outbox(egraph_t *egraph);
 static bool egraph_sync_sat_trail(egraph_t *egraph);
 static bool egraph_dispatch_attached_literal(egraph_t *egraph, literal_t l, void *atom);
+static bool deliver_satellite_literal_now(egraph_t *egraph, etype_t i, void *atom, literal_t l);
+static void reset_satellite_worklists(egraph_t *egraph);
 static void egraph_queue_backend_clause(egraph_t *egraph, egraph_fact_kind_t kind,
                                         uint32_t n, literal_t *a);
+static bool publish_satellite_fact(egraph_t *egraph, etype_t i, egraph_fact_kind_t kind,
+                                   uint32_t n, const int32_t *a, int32_t id,
+                                   composite_t *hint, void *payload);
 
 static inline th_hub_interface_t *satellite_hub(egraph_t *egraph, etype_t i) {
   if (i < NUM_SATELLITES && egraph->eg[i] != NULL) {
@@ -3651,13 +3679,13 @@ static inline th_hub_interface_t *satellite_hub(egraph_t *egraph, etype_t i) {
 }
 
 /*
- * Send a fact to a satellite solver.
+ * Deliver a fact to a satellite solver immediately.
  * - prefer the hub-native ingress path when available
  * - otherwise fall back to the legacy equality-specific callbacks
  */
-static void publish_satellite_fact(egraph_t *egraph, etype_t i, egraph_fact_kind_t kind,
-                                   uint32_t n, const int32_t *a, int32_t id,
-                                   composite_t *hint, void *payload) {
+static bool deliver_satellite_fact_now(egraph_t *egraph, etype_t i, egraph_fact_kind_t kind,
+                                       uint32_t n, const int32_t *a, int32_t id,
+                                       composite_t *hint, void *payload) {
   th_hub_interface_t *hub;
 
   assert(i < NUM_SATELLITES && egraph->eg[i] != NULL);
@@ -3665,28 +3693,82 @@ static void publish_satellite_fact(egraph_t *egraph, etype_t i, egraph_fact_kind
   hub = satellite_hub(egraph, i);
   if (hub != NULL && hub->ingest_fact != NULL) {
     hub->ingest_fact(egraph->th[i], kind, n, a, id, hint, payload);
-    return;
+    return true;
   }
 
   switch (kind) {
   case EGRAPH_FACT_VAR_EQ:
     assert(n == 2);
     egraph->eg[i]->assert_equality(egraph->th[i], a[0], a[1], id);
-    break;
+    return true;
 
   case EGRAPH_FACT_VAR_DISEQ:
     assert(n == 2);
     egraph->eg[i]->assert_disequality(egraph->th[i], a[0], a[1], hint);
-    break;
+    return true;
 
   case EGRAPH_FACT_VAR_DISTINCT:
-    egraph->eg[i]->assert_distinct(egraph->th[i], n, (thvar_t *) a, hint);
-    break;
+    return egraph->eg[i]->assert_distinct(egraph->th[i], n, (thvar_t *) a, hint);
+
+  case EGRAPH_FACT_LITERAL:
+    assert(n == 1);
+    return deliver_satellite_literal_now(egraph, i, payload, a[0]);
 
   default:
     assert(false);
-    break;
+    return false;
   }
+}
+
+/*
+ * Send a fact to a satellite solver.
+ * - during search, facts are queued in the egraph-owned per-satellite inbox
+ * - outside search, facts are delivered immediately
+ */
+static bool publish_satellite_fact(egraph_t *egraph, etype_t i, egraph_fact_kind_t kind,
+                                   uint32_t n, const int32_t *a, int32_t id,
+                                   composite_t *hint, void *payload) {
+  if (egraph_backend_outbox_active(egraph)) {
+    egraph_fact_push_words(&egraph->satellite_inbox[i], kind, n, a, id, hint, payload);
+    return true;
+  }
+
+  return deliver_satellite_fact_now(egraph, i, kind, n, a, id, hint, payload);
+}
+
+/*
+ * Drain the hub-owned worklist for satellite i.
+ * - facts are delivered in FIFO order
+ * - if the satellite publishes new literals/lemmas/conflicts while consuming
+ *   a fact, flush them immediately so conflicts stop the round promptly
+ */
+static bool drain_satellite_worklist(egraph_t *egraph, etype_t i) {
+  egraph_fact_queue_t *queue;
+  egraph_fact_t *a, *end;
+
+  queue = &egraph->satellite_inbox[i];
+  if (eassertion_queue_is_empty(queue)) {
+    return true;
+  }
+
+  a = eassertion_queue_start(queue);
+  end = eassertion_queue_end(queue);
+  while (a < end) {
+    if (! deliver_satellite_fact_now(egraph, i, eassertion_get_kind(a), eassertion_get_arity(a),
+                                     a->var, a->id, a->hint, eassertion_get_payload(a))) {
+      reset_eassertion_queue(queue);
+      return false;
+    }
+    if (eassertion_queue_is_nonempty(&egraph->backend_outbox) &&
+        ! egraph_flush_backend_outbox(egraph)) {
+      reset_eassertion_queue(queue);
+      return false;
+    }
+    a = eassertion_next(a);
+  }
+
+  reset_eassertion_queue(queue);
+  return true;
 }
 
 /*
@@ -3699,6 +3781,9 @@ static bool run_satellite_propagation(egraph_t *egraph, etype_t i) {
   bool ok;
 
   assert(i < NUM_SATELLITES && egraph->ctrl[i] != NULL);
+  if (! drain_satellite_worklist(egraph, i)) {
+    return false;
+  }
 
   hub = satellite_hub(egraph, i);
   if (hub != NULL && hub->run_propagation != NULL) {
@@ -3724,8 +3809,17 @@ static fcheck_code_t run_satellite_final_check(egraph_t *egraph, etype_t i) {
   bool had_events;
 
   assert(i < NUM_SATELLITES && egraph->ctrl[i] != NULL);
+  if (! drain_satellite_worklist(egraph, i)) {
+    return FCHECK_CONTINUE;
+  }
 
   hub = satellite_hub(egraph, i);
+  if (hub != NULL && hub->run_propagation != NULL &&
+      hub->has_pending_work != NULL && hub->has_pending_work(egraph->th[i])) {
+    if (! run_satellite_propagation(egraph, i)) {
+      return FCHECK_CONTINUE;
+    }
+  }
   if (hub != NULL && hub->run_final_check != NULL) {
     code = hub->run_final_check(egraph->th[i]);
   } else {
@@ -3840,14 +3934,13 @@ static void propagate_tuple_equality(egraph_t *egraph, eterm_t v1, eterm_t v2) {
  */
 static void propagate_boolean_equality(egraph_t *egraph, bvar_t v1, bvar_t v2, int32_t id) {
   atom_t *atm1, *atm2, *atm;
-  smt_core_t *core;
   literal_t l;
 
-  core = egraph->core;
-  assert(core != NULL && bvar_has_atom(core, v1) && bvar_has_atom(core, v2));
+  assert(egraph_bvar_has_atom(egraph, v1) && egraph_bvar_has_atom(egraph, v2));
 
-  atm1 = get_bvar_atom(core, v1);
-  atm2 = get_bvar_atom(core, v2);
+  atm1 = get_egraph_atom_for_bvar(egraph, v1);
+  atm2 = get_egraph_atom_for_bvar(egraph, v2);
+  assert(atm1 != NULL && atm2 != NULL);
 
   if (v1 == const_bvar) {
     atm = atm2;
@@ -3861,9 +3954,9 @@ static void propagate_boolean_equality(egraph_t *egraph, bvar_t v1, bvar_t v2, i
       assert(egraph_term_is_true(egraph, atm->eterm) ||
              egraph_term_is_false(egraph, atm->eterm));
 
-      if (bvar_is_unassigned(core, atm->boolvar)) {
+      if (! egraph_literal_is_assigned(egraph, pos_lit(atm->boolvar))) {
         l = mk_lit(atm->boolvar, egraph_term_is_false(egraph, atm->eterm));
-        propagate_literal(core, l, mk_i32_expl(id));
+        egraph_propagate_literal(egraph, l, mk_i32_expl(id));
         egraph->stats.th_props ++;
       }
 
@@ -3925,16 +4018,17 @@ static void propagate_thvar_equality(egraph_t *egraph, class_t c1, thvar_t v1, c
  * - for tuple equalities, there's nothing to undo
  */
 static void undo_thvar_equality(egraph_t *egraph, class_t c1, thvar_t v1, class_t c2, thvar_t v2) {
-  smt_core_t *core;
+  atom_t *a1, *a2;
 
   assert(v1 != null_thvar && v2 != null_thvar &&
          v1 == egraph_class_thvar(egraph, c1) &&
          v2 == egraph_class_thvar(egraph, c2));
 
   if (egraph->classes.etype[c1] == ETYPE_BOOL) {
-    core = egraph->core;
-    assert(core != NULL && bvar_has_atom(core, v1) && bvar_has_atom(core, v2));
-    split_atom_lists(get_bvar_atom(core, v1), get_bvar_atom(core, v2));
+    a1 = get_egraph_atom_for_bvar(egraph, v1);
+    a2 = get_egraph_atom_for_bvar(egraph, v2);
+    assert(a1 != NULL && a2 != NULL);
+    split_atom_lists(a1, a2);
   }
 }
 
@@ -3945,14 +4039,12 @@ static void undo_thvar_equality(egraph_t *egraph, class_t c1, thvar_t v1, class_
  */
 static void fixup_atom_lists(egraph_t *egraph, bvar_t v1, bvar_t v2) {
   atom_t *atm1, *atm2;
-  smt_core_t *core;
 
-  core = egraph->core;
+  assert(egraph_bvar_has_atom(egraph, v1) && egraph_bvar_has_atom(egraph, v2));
 
-  assert(core != NULL && bvar_has_atom(core, v1) && bvar_has_atom(core, v2));
-
-  atm1 = get_bvar_atom(core, v1);
-  atm2 = get_bvar_atom(core, v2);
+  atm1 = get_egraph_atom_for_bvar(egraph, v1);
+  atm2 = get_egraph_atom_for_bvar(egraph, v2);
+  assert(atm1 != NULL && atm2 != NULL);
 
   merge_atom_lists(atm1, atm2);
 }
@@ -4593,13 +4685,14 @@ void egraph_start_search(egraph_t *egraph) {
 
 #if TRACE
   fprintf(stdout, "---> EGRAPH START_SEARCH [dlevel = %"PRIu32", decisions = %"PRIu64"]\n",
-          egraph->decision_level, egraph->core->stats.decisions);
+          egraph->decision_level, egraph_num_decisions(egraph));
   fprintf(stdout, "\n=== EGRAPH TERMS ===\n");
   print_egraph_terms(stdout, egraph);
   fprintf(stdout, "\n");
 #endif
 
-  assert(egraph->core != NULL && egraph->decision_level == egraph->base_level);
+  assert(sat_kernel_is_attached(&egraph->sat) &&
+         egraph->decision_level == egraph->base_level);
 
   egraph->stats.eq_props = 0;
   egraph->stats.th_props = 0;
@@ -4608,9 +4701,10 @@ void egraph_start_search(egraph_t *egraph) {
   egraph->stats.final_checks = 0;
   egraph->stats.interface_eqs = 0;
   ivector_reset(&egraph->clause_buffer);
+  reset_satellite_worklists(egraph);
   reset_eassertion_queue(&egraph->backend_outbox);
   ivector_reset(&egraph->backend_buffer);
-  egraph->sat_sync_ptr = egraph->core->stack.theory_ptr;
+  egraph->sat_sync_ptr = egraph_sat_api(egraph)->trail_theory_ptr(egraph_backend(egraph));
 
   for (i=0; i<NUM_SATELLITES; i++) {
     if (egraph->ctrl[i] != NULL) {
@@ -4758,6 +4852,7 @@ void egraph_reset(egraph_t *egraph) {
   arena_reset(&egraph->arena);
   reset_istack(&egraph->istack);
   ivector_reset(&egraph->clause_buffer);
+  reset_satellite_worklists(egraph);
   reset_eassertion_queue(&egraph->backend_outbox);
   ivector_reset(&egraph->backend_buffer);
   egraph->sat_sync_ptr = 0;
@@ -5085,9 +5180,10 @@ void egraph_backtrack(egraph_t *egraph, uint32_t back_level) {
 
   egraph_local_backtrack(egraph, back_level);
   ivector_reset(&egraph->clause_buffer);
+  reset_satellite_worklists(egraph);
   reset_eassertion_queue(&egraph->backend_outbox);
   ivector_reset(&egraph->backend_buffer);
-  egraph->sat_sync_ptr = egraph->core->stack.top;
+  egraph->sat_sync_ptr = egraph_sat_api(egraph)->trail_top(egraph_backend(egraph));
   if (back_level == egraph->base_level && egraph->reanalyze_vector.size > 0) {
     egraph_reactivate_dynamic_terms(egraph);
   }
@@ -5269,6 +5365,7 @@ void egraph_pop(egraph_t *egraph) {
 
   // remove top trail element
   egraph_trail_pop(&egraph->trail_stack);
+  reset_satellite_worklists(egraph);
 
   // forward pop to the satellite solvers
   for (i=0; i<NUM_SATELLITES; i++) {
@@ -5342,7 +5439,7 @@ bool egraph_propagate(egraph_t *egraph) {
 
 #if TRACE
   printf("---> EGRAPH PROPAGATE [dlevel = %"PRIu32", decisions = %"PRIu64"]\n",
-         egraph->decision_level, egraph->core->stats.decisions);
+         egraph->decision_level, egraph_num_decisions(egraph));
 #endif
 
   do {
@@ -5362,7 +5459,7 @@ bool egraph_propagate(egraph_t *egraph) {
         conflict->data[i] = not(conflict->data[i]);
       }
       ivector_push(conflict, null_literal); // end marker
-      record_theory_conflict(egraph->core, conflict->data);
+      egraph_sat_api(egraph)->record_conflict(egraph_backend(egraph), conflict->data);
 
       egraph->stats.th_conflicts ++;
 
@@ -5759,8 +5856,8 @@ static uint32_t egraph_gen_interface_lemmas(egraph_t *egraph, uint32_t max_eqs, 
 static bool bool_var_equal_in_model(egraph_t *egraph, thvar_t x1, thvar_t x2) {
   bval_t b1, b2;
 
-  b1 = bvar_value(egraph->core, x1);
-  b2 = bvar_value(egraph->core, x2);
+  b1 = egraph_bvar_value(egraph, x1);
+  b2 = egraph_bvar_value(egraph, x2);
   assert(bval_is_def(b1) && bval_is_def(b2));
   return b1 == b2;
 }
@@ -6303,9 +6400,9 @@ static fcheck_code_t baseline_final_check(egraph_t *egraph) {
   egraph->stats.interface_eqs += i;
 
   if (i == 1) {
-    trace_printf(egraph->core->trace, 3, "(final check: 1 interface lemma)\n");
+    trace_printf(egraph_trace(egraph), 3, "(final check: 1 interface lemma)\n");
   } else {
-    trace_printf(egraph->core->trace, 3, "(final check: %"PRIu32" interface lemmas)\n", i);
+    trace_printf(egraph_trace(egraph), 3, "(final check: %"PRIu32" interface lemmas)\n", i);
   }
 
   c = FCHECK_SAT; // default value
@@ -6390,9 +6487,9 @@ static fcheck_code_t experimental_final_check(egraph_t *egraph) {
     c = FCHECK_CONTINUE;
 
     if (i == 1) {
-      trace_printf(egraph->core->trace, 3, "(final check: 1 interface lemma)\n");
+      trace_printf(egraph_trace(egraph), 3, "(final check: 1 interface lemma)\n");
     } else {
-      trace_printf(egraph->core->trace, 3, "(final check: %"PRIu32" interface lemmas)\n", i);
+      trace_printf(egraph_trace(egraph), 3, "(final check: %"PRIu32" interface lemmas)\n", i);
     }
 
 #if TRACE_FCHECK
@@ -6422,7 +6519,7 @@ static fcheck_code_t experimental_final_check(egraph_t *egraph) {
           printf("---> exit after array reconcile: %"PRIu32" lemmas\n", i);
           fflush(stdout);
 #endif
-          trace_printf(egraph->core->trace, 3, "(final check: %"PRIu32" array lemmas)\n", i);
+          trace_printf(egraph_trace(egraph), 3, "(final check: %"PRIu32" array lemmas)\n", i);
           c = FCHECK_CONTINUE;
         }
       }
@@ -6493,6 +6590,7 @@ void egraph_clear(egraph_t *egraph) {
     egraph_reconciliation_restore(egraph);
   }
   ivector_reset(&egraph->clause_buffer);
+  reset_satellite_worklists(egraph);
   reset_eassertion_queue(&egraph->backend_outbox);
   ivector_reset(&egraph->backend_buffer);
   // forward to the satellite solvers
@@ -6815,13 +6913,13 @@ void egraph_expand_explanation(egraph_t *egraph, literal_t l, void *expl, ivecto
 
   assert(v->size == 0);
 
-  atom = get_bvar_atom(egraph->core, var_of(l));
+  atom = egraph_bvar_atom(egraph, var_of(l));
   switch (atom_tag(atom)) {
   case EGRAPH_ATM_TAG:
     a = (atom_t *) atom;
     assert(a->boolvar == var_of(l));
-    assert(literal_is_assigned(egraph->core, l) &&
-           bvar_value(egraph->core, var_of(l)) == egraph_term_truth_value(egraph, a->eterm));
+    assert(egraph_literal_is_assigned(egraph, l) &&
+           egraph_bvar_value(egraph, var_of(l)) == egraph_term_truth_value(egraph, a->eterm));
     id = i32_of_expl(expl);    // id := edge that triggered the propagation
     u = mk_occ(a->eterm, sign_of(l));
 #if 0
@@ -6995,13 +7093,13 @@ static th_smt_interface_t egraph_smt = {
  * Initialize all internal structures
  * - ttbl = attached type table
  * - use default initial sizes
- * - subsolver descriptors are all NULL and core is also NULL
+ * - subsolver descriptors are all NULL and no SAT kernel is attached yet
  * - set all options and parameters to their default values
  */
 void init_egraph(egraph_t *egraph, type_table_t *ttbl) {
   uint32_t i;
 
-  egraph->core = NULL;
+  init_sat_kernel(&egraph->sat);
   egraph->types = ttbl;
 
   egraph->base_level = 0;
@@ -7052,6 +7150,9 @@ void init_egraph(egraph_t *egraph, type_table_t *ttbl) {
   init_ivector(&egraph->aux_buffer, 0);
   init_ivector(&egraph->clause_buffer, 0);
   init_istack(&egraph->istack);
+  for (i=0; i<NUM_SATELLITES; i++) {
+    init_eassertion_queue(&egraph->satellite_inbox[i]);
+  }
   init_eassertion_queue(&egraph->backend_outbox);
   init_ivector(&egraph->backend_buffer, DEFAULT_EXPL_VECTOR_SIZE);
   egraph->sat_sync_ptr = 0;
@@ -7185,16 +7286,38 @@ th_smt_interface_t *egraph_smt_interface(egraph_t *egraph) {
   return &egraph_smt;
 }
 
+static void reset_satellite_worklists(egraph_t *egraph) {
+  uint32_t i;
+
+  for (i=0; i<NUM_SATELLITES; i++) {
+    reset_eassertion_queue(&egraph->satellite_inbox[i]);
+  }
+}
+
 
 /*
- * Attach the core to the egraph
+ * Attach a SAT kernel to the egraph.
+ */
+void egraph_attach_sat_kernel(egraph_t *egraph, const sat_kernel_t *kernel) {
+  assert(egraph != NULL);
+  assert(kernel != NULL);
+  assert(sat_kernel_is_attached(kernel));
+
+  egraph->sat = *kernel;
+  egraph_init_constant(egraph);
+}
+
+/*
+ * Attach the default smt_core-backed SAT kernel to the egraph.
  * - the core must be initialized with the egraph_control and egraph_smt_interface
  */
 void egraph_attach_core(egraph_t *egraph, smt_core_t *core) {
+  sat_kernel_t kernel;
+
   assert(core != NULL && core->th_solver == egraph);
 
-  egraph->core = core;
-  egraph_init_constant(egraph);
+  init_smt_core_sat_kernel(&kernel, core);
+  egraph_attach_sat_kernel(egraph, &kernel);
 }
 
 
@@ -7202,6 +7325,8 @@ void egraph_attach_core(egraph_t *egraph, smt_core_t *core) {
  * Delete everything
  */
 void delete_egraph(egraph_t *egraph) {
+  uint32_t i;
+
   delete_egraph_model(&egraph->mdl);
   if (egraph->app_partition != NULL) {
     delete_ptr_partition(egraph->app_partition);
@@ -7218,6 +7343,9 @@ void delete_egraph(egraph_t *egraph) {
   delete_ivector(&egraph->expl_queue);
   delete_ivector(&egraph->clause_buffer);
   delete_ivector(&egraph->backend_buffer);
+  for (i=0; i<NUM_SATELLITES; i++) {
+    delete_eassertion_queue(&egraph->satellite_inbox[i]);
+  }
   delete_eassertion_queue(&egraph->backend_outbox);
   delete_arena(&egraph->arena);
   delete_sign_buffer(&egraph->sgn);
@@ -7246,38 +7374,89 @@ void delete_egraph(egraph_t *egraph) {
  *  ORCHESTRATOR SERVICES    *
  *****************************/
 
-static inline smt_core_t *egraph_backend(egraph_t *egraph) {
-  assert(egraph != NULL && egraph->core != NULL);
-  return egraph->core;
+static inline void *egraph_backend(egraph_t *egraph) {
+  assert(egraph != NULL && sat_kernel_is_attached(&egraph->sat));
+  return sat_kernel_backend(&egraph->sat);
+}
+
+static inline th_sat_interface_t *egraph_sat_api(egraph_t *egraph) {
+  assert(egraph != NULL && sat_kernel_is_attached(&egraph->sat));
+  return sat_kernel_api(&egraph->sat);
 }
 
 static inline bool egraph_backend_outbox_active(egraph_t *egraph) {
   smt_status_t status;
 
-  if (egraph == NULL || egraph->core == NULL) {
+  if (egraph == NULL || ! sat_kernel_is_attached(&egraph->sat)) {
     return false;
   }
 
-  status = egraph->core->status;
+  status = sat_kernel_api(&egraph->sat)->status(sat_kernel_backend(&egraph->sat));
   return status == YICES_STATUS_SEARCHING || status == YICES_STATUS_INTERRUPTED;
 }
 
+static bool deliver_satellite_literal_now(egraph_t *egraph, etype_t i, void *atom, literal_t l) {
+  th_hub_interface_t *hub;
+
+  hub = satellite_hub(egraph, i);
+  if (hub != NULL && hub->ingest_fact != NULL) {
+    hub->ingest_fact(egraph->th[i], EGRAPH_FACT_LITERAL, 1, &l, 0, NULL, atom);
+    return true;
+  }
+
+  switch (i) {
+  case ETYPE_INT:
+    return egraph->arith_smt == NULL ||
+      egraph->arith_smt->assert_atom(egraph->th[ETYPE_INT],
+                                     atom != NULL && atom_tag(atom) == ARITH_ATM_TAG ? untag_atom(atom) : atom,
+                                     l);
+
+  case ETYPE_BV:
+    return egraph->bv_smt == NULL ||
+      egraph->bv_smt->assert_atom(egraph->th[ETYPE_BV],
+                                  atom != NULL && atom_tag(atom) == BV_ATM_TAG ? untag_atom(atom) : atom,
+                                  l);
+
+  default:
+    return true;
+  }
+}
+
 static bool egraph_literal_truth_in_context(egraph_t *egraph, literal_t l, bool *is_true) {
-  smt_core_t *core;
+  th_sat_interface_t *sat;
+  void *backend;
   void *atom;
+  hub_atom_t *binding;
   occ_t t;
 
-  core = egraph_backend(egraph);
-  if (! bvar_has_atom(core, var_of(l))) {
+  sat = egraph_sat_api(egraph);
+  backend = egraph_backend(egraph);
+  if (! sat->bvar_has_atom(backend, var_of(l))) {
     return false;
   }
 
-  atom = bvar_atom(core, var_of(l));
-  if (atom == NULL || atom_tag(atom) != EGRAPH_ATM_TAG) {
+  atom = sat->bvar_atom(backend, var_of(l));
+  if (atom == NULL) {
     return false;
   }
 
-  t = mk_occ(((atom_t *) atom)->eterm, sign_of_lit(l));
+  switch (atom_tag(atom)) {
+  case EGRAPH_ATM_TAG:
+    t = mk_occ(((atom_t *) atom)->eterm, sign_of_lit(l));
+    break;
+
+  case HUB_ATM_TAG:
+    binding = (hub_atom_t *) untag_atom(atom);
+    if (binding->reified_eterm == null_eterm) {
+      return false;
+    }
+    t = mk_occ(binding->reified_eterm, sign_of_lit(l));
+    break;
+
+  default:
+    return false;
+  }
+
   if (egraph_occ_is_true(egraph, t)) {
     *is_true = true;
     return true;
@@ -7334,24 +7513,26 @@ static bool egraph_simplify_clause_in_context(egraph_t *egraph, uint32_t n,
 }
 
 static void egraph_backend_add_clause_now(egraph_t *egraph, uint32_t n, literal_t *a) {
-  smt_core_t *core;
+  th_sat_interface_t *sat;
+  void *backend;
 
-  core = egraph_backend(egraph);
+  sat = egraph_sat_api(egraph);
+  backend = egraph_backend(egraph);
   switch (n) {
   case 0:
-    add_empty_clause(core);
+    sat->add_empty_clause(backend);
     break;
   case 1:
-    add_unit_clause(core, a[0]);
+    sat->add_unit_clause(backend, a[0]);
     break;
   case 2:
-    add_binary_clause(core, a[0], a[1]);
+    sat->add_binary_clause(backend, a[0], a[1]);
     break;
   case 3:
-    add_ternary_clause(core, a[0], a[1], a[2]);
+    sat->add_ternary_clause(backend, a[0], a[1], a[2]);
     break;
   default:
-    add_clause(core, n, a);
+    sat->add_clause(backend, n, a);
     break;
   }
 }
@@ -7385,30 +7566,10 @@ static void egraph_queue_clause(egraph_t *egraph, uint32_t n, literal_t *a) {
 }
 
 static bool egraph_publish_satellite_literal(egraph_t *egraph, etype_t i, void *atom, literal_t l) {
-  th_hub_interface_t *hub;
-
-  hub = satellite_hub(egraph, i);
-  if (hub != NULL && hub->ingest_fact != NULL) {
-    hub->ingest_fact(egraph->th[i], EGRAPH_FACT_LITERAL, 1, &l, 0, NULL, atom);
-    return true;
+  if (egraph_backend_outbox_active(egraph)) {
+    return publish_satellite_fact(egraph, i, EGRAPH_FACT_LITERAL, 1, &l, 0, NULL, atom);
   }
-
-  switch (i) {
-  case ETYPE_INT:
-    return egraph->arith_smt == NULL ||
-      egraph->arith_smt->assert_atom(egraph->th[ETYPE_INT],
-                                     atom != NULL && atom_tag(atom) == ARITH_ATM_TAG ? untag_atom(atom) : atom,
-                                     l);
-
-  case ETYPE_BV:
-    return egraph->bv_smt == NULL ||
-      egraph->bv_smt->assert_atom(egraph->th[ETYPE_BV],
-                                  atom != NULL && atom_tag(atom) == BV_ATM_TAG ? untag_atom(atom) : atom,
-                                  l);
-
-  default:
-    return true;
-  }
+  return deliver_satellite_literal_now(egraph, i, atom, l);
 }
 
 static bool egraph_dispatch_attached_literal(egraph_t *egraph, literal_t l, void *atom) {
@@ -7428,6 +7589,12 @@ static bool egraph_dispatch_attached_literal(egraph_t *egraph, literal_t l, void
 
   case HUB_ATM_TAG:
     binding = (hub_atom_t *) untag_atom(atom);
+    if (binding->reified_eterm == null_eterm) {
+      (void) egraph_bvar2term(egraph, var_of(l));
+    }
+    if (binding->reified_eterm != null_eterm) {
+      egraph_assert_term(egraph, mk_occ(binding->reified_eterm, sign_of(l)), l);
+    }
     return egraph_publish_satellite_literal(egraph, binding->owner, binding->payload, l);
 
   case ARITH_ATM_TAG:
@@ -7443,19 +7610,21 @@ static bool egraph_dispatch_attached_literal(egraph_t *egraph, literal_t l, void
 }
 
 static bool egraph_sync_sat_trail(egraph_t *egraph) {
-  smt_core_t *core;
+  th_sat_interface_t *sat;
+  void *backend;
   literal_t *queue;
   uint32_t i, top;
   literal_t l;
   void *atom;
 
-  core = egraph_backend(egraph);
-  queue = core->stack.lit;
+  sat = egraph_sat_api(egraph);
+  backend = egraph_backend(egraph);
+  queue = sat->trail_literals(backend);
   i = egraph->sat_sync_ptr;
-  top = core->stack.top;
+  top = sat->trail_top(backend);
   while (i < top) {
     l = queue[i];
-    atom = bvar_has_atom(core, var_of(l)) ? get_bvar_atom(core, var_of(l)) : NULL;
+    atom = sat->bvar_has_atom(backend, var_of(l)) ? sat->bvar_atom(backend, var_of(l)) : NULL;
     if (! egraph_dispatch_attached_literal(egraph, l, atom)) {
       egraph->sat_sync_ptr = i;
       return false;
@@ -7495,17 +7664,20 @@ static void egraph_queue_backend_conflict(egraph_t *egraph, egraph_fact_kind_t k
  *   in backend_buffer so the core can inspect it later.
  */
 static bool egraph_flush_backend_outbox(egraph_t *egraph) {
-  smt_core_t *core;
+  th_sat_interface_t *sat;
+  void *backend;
   egraph_fact_t *a, *end;
   ivector_t *v;
   uint32_t n;
   antecedent_t ant;
 
   if (eassertion_queue_is_empty(&egraph->backend_outbox)) {
-    return egraph->core == NULL || ! egraph->core->inconsistent;
+    return ! sat_kernel_is_attached(&egraph->sat) ||
+      ! egraph_sat_api(egraph)->inconsistent(egraph_backend(egraph));
   }
 
-  core = egraph_backend(egraph);
+  sat = egraph_sat_api(egraph);
+  backend = egraph_backend(egraph);
   a = eassertion_queue_start(&egraph->backend_outbox);
   end = eassertion_queue_end(&egraph->backend_outbox);
   v = &egraph->backend_buffer;
@@ -7520,34 +7692,34 @@ static bool egraph_flush_backend_outbox(egraph_t *egraph) {
 
     case EGRAPH_FACT_PROPAGATED_LITERAL:
       assert(n == 1);
-      propagate_literal(core, a->var[0], eassertion_get_payload(a));
+      sat->propagate_literal(backend, a->var[0], eassertion_get_payload(a));
       break;
 
     case EGRAPH_FACT_IMPLIED_LITERAL:
       assert(n == 1);
       ant = (antecedent_t) (uintptr_t) eassertion_get_payload(a);
-      implied_literal(core, a->var[0], ant);
+      sat->implied_literal(backend, a->var[0], ant);
       break;
 
     case EGRAPH_FACT_CONFLICT:
       switch (n) {
       case 0:
-        record_empty_theory_conflict(core);
+        sat->record_empty_conflict(backend);
         break;
       case 1:
-        record_unit_theory_conflict(core, a->var[0]);
+        sat->record_unit_conflict(backend, a->var[0]);
         break;
       case 2:
-        record_binary_theory_conflict(core, a->var[0], a->var[1]);
+        sat->record_binary_conflict(backend, a->var[0], a->var[1]);
         break;
       case 3:
-        record_ternary_theory_conflict(core, a->var[0], a->var[1], a->var[2]);
+        sat->record_ternary_conflict(backend, a->var[0], a->var[1], a->var[2]);
         break;
       default:
         ivector_reset(v);
         ivector_copy(v, (literal_t *) a->var, n);
         ivector_push(v, null_literal);
-        record_theory_conflict(core, v->data);
+        sat->record_conflict(backend, v->data);
         break;
       }
       break;
@@ -7557,7 +7729,7 @@ static bool egraph_flush_backend_outbox(egraph_t *egraph) {
       break;
     }
 
-    if (core->inconsistent) {
+    if (sat->inconsistent(backend)) {
       reset_eassertion_queue(&egraph->backend_outbox);
       return false;
     }
@@ -7570,18 +7742,19 @@ static bool egraph_flush_backend_outbox(egraph_t *egraph) {
 }
 
 bvar_t egraph_new_boolean_variable(egraph_t *egraph) {
-  return create_boolean_variable(egraph_backend(egraph));
+  return egraph_sat_api(egraph)->new_boolvar(egraph_backend(egraph));
 }
 
 void egraph_attach_sat_atom_to_bvar(egraph_t *egraph, etype_t owner, bvar_t v, void *atom) {
   hub_atom_t *binding;
 
   binding = create_hub_atom_binding(egraph, owner, atom);
-  attach_atom_to_bvar(egraph_backend(egraph), v, tagged_hub_atom(binding));
+  egraph_sat_api(egraph)->attach_atom(egraph_backend(egraph), v, tagged_hub_atom(binding));
+  (void) egraph_bvar2term(egraph, v);
 }
 
 void egraph_remove_bvar_atom(egraph_t *egraph, bvar_t v) {
-  remove_bvar_atom(egraph_backend(egraph), v);
+  egraph_sat_api(egraph)->remove_atom(egraph_backend(egraph), v);
 }
 
 void egraph_add_empty_clause(egraph_t *egraph) {
@@ -7640,7 +7813,7 @@ void egraph_implied_literal(egraph_t *egraph, literal_t l, antecedent_t a) {
   if (egraph_backend_outbox_active(egraph)) {
     egraph_queue_backend_literal(egraph, EGRAPH_FACT_IMPLIED_LITERAL, l, (void *) (uintptr_t) a);
   } else {
-    implied_literal(egraph_backend(egraph), l, a);
+    egraph_sat_api(egraph)->implied_literal(egraph_backend(egraph), l, a);
   }
 }
 
@@ -7648,7 +7821,7 @@ void egraph_propagate_literal(egraph_t *egraph, literal_t l, void *expl) {
   if (egraph_backend_outbox_active(egraph)) {
     egraph_queue_backend_literal(egraph, EGRAPH_FACT_PROPAGATED_LITERAL, l, expl);
   } else {
-    propagate_literal(egraph_backend(egraph), l, expl);
+    egraph_sat_api(egraph)->propagate_literal(egraph_backend(egraph), l, expl);
   }
 }
 
@@ -7656,7 +7829,7 @@ void egraph_record_empty_conflict(egraph_t *egraph) {
   if (egraph_backend_outbox_active(egraph)) {
     egraph_queue_backend_clause(egraph, EGRAPH_FACT_CONFLICT, 0, NULL);
   } else {
-    record_empty_theory_conflict(egraph_backend(egraph));
+    egraph_sat_api(egraph)->record_empty_conflict(egraph_backend(egraph));
   }
 }
 
@@ -7664,7 +7837,7 @@ void egraph_record_unit_conflict(egraph_t *egraph, literal_t l) {
   if (egraph_backend_outbox_active(egraph)) {
     egraph_queue_backend_clause(egraph, EGRAPH_FACT_CONFLICT, 1, &l);
   } else {
-    record_unit_theory_conflict(egraph_backend(egraph), l);
+    egraph_sat_api(egraph)->record_unit_conflict(egraph_backend(egraph), l);
   }
 }
 
@@ -7676,7 +7849,7 @@ void egraph_record_binary_conflict(egraph_t *egraph, literal_t l1, literal_t l2)
     a[1] = l2;
     egraph_queue_backend_clause(egraph, EGRAPH_FACT_CONFLICT, 2, a);
   } else {
-    record_binary_theory_conflict(egraph_backend(egraph), l1, l2);
+    egraph_sat_api(egraph)->record_binary_conflict(egraph_backend(egraph), l1, l2);
   }
 }
 
@@ -7689,7 +7862,7 @@ void egraph_record_ternary_conflict(egraph_t *egraph, literal_t l1, literal_t l2
     a[2] = l3;
     egraph_queue_backend_clause(egraph, EGRAPH_FACT_CONFLICT, 3, a);
   } else {
-    record_ternary_theory_conflict(egraph_backend(egraph), l1, l2, l3);
+    egraph_sat_api(egraph)->record_ternary_conflict(egraph_backend(egraph), l1, l2, l3);
   }
 }
 
@@ -7697,48 +7870,48 @@ void egraph_record_conflict(egraph_t *egraph, literal_t *a) {
   if (egraph_backend_outbox_active(egraph)) {
     egraph_queue_backend_conflict(egraph, EGRAPH_FACT_CONFLICT, a);
   } else {
-    record_theory_conflict(egraph_backend(egraph), a);
+    egraph_sat_api(egraph)->record_conflict(egraph_backend(egraph), a);
   }
 }
 
 uint32_t egraph_add_quant_lemmas(egraph_t *egraph, literal_t en, ivector_t *units) {
-  return add_all_quant_lemmas(egraph_backend(egraph), en, units);
+  return egraph_sat_api(egraph)->add_quant_lemmas(egraph_backend(egraph), en, units);
 }
 
 void egraph_build_unsat_core(egraph_t *egraph, ivector_t *v) {
-  build_unsat_core(egraph_backend(egraph), v);
+  egraph_sat_api(egraph)->build_unsat_core(egraph_backend(egraph), v);
 }
 
 void egraph_bump_conflicts(egraph_t *egraph, uint64_t delta) {
-  egraph_backend(egraph)->stats.conflicts += delta;
+  egraph_sat_api(egraph)->bump_conflicts(egraph_backend(egraph), delta);
 }
 
 void egraph_collect_free_bool_vars(egraph_t *egraph, free_bool_vars_t *fv) {
-  collect_free_bool_vars(fv, egraph_backend(egraph));
+  egraph_sat_api(egraph)->collect_free_bool_vars(egraph_backend(egraph), fv);
 }
 
 void egraph_print_binary_clauses(FILE *f, egraph_t *egraph) {
-  print_binary_clauses(f, egraph_backend(egraph));
+  egraph_sat_api(egraph)->print_binary_clauses(f, egraph_backend(egraph));
 }
 
 void egraph_print_problem_clauses(FILE *f, egraph_t *egraph) {
-  print_problem_clauses(f, egraph_backend(egraph));
+  egraph_sat_api(egraph)->print_problem_clauses(f, egraph_backend(egraph));
 }
 
 void egraph_print_learned_clauses(FILE *f, egraph_t *egraph) {
-  print_learned_clauses(f, egraph_backend(egraph));
+  egraph_sat_api(egraph)->print_learned_clauses(f, egraph_backend(egraph));
 }
 
 void egraph_print_lemmas(FILE *f, egraph_t *egraph) {
-  print_lemmas(f, egraph_backend(egraph));
+  egraph_sat_api(egraph)->print_lemmas(f, egraph_backend(egraph));
 }
 
 void egraph_print_clauses(FILE *f, egraph_t *egraph) {
-  print_clauses(f, egraph_backend(egraph));
+  egraph_sat_api(egraph)->print_clauses(f, egraph_backend(egraph));
 }
 
 void egraph_print_boolean_assignment(FILE *f, egraph_t *egraph) {
-  print_boolean_assignment(f, egraph_backend(egraph));
+  egraph_sat_api(egraph)->print_boolean_assignment(f, egraph_backend(egraph));
 }
 
 
@@ -7752,205 +7925,326 @@ void egraph_print_boolean_assignment(FILE *f, egraph_t *egraph) {
  * CDCL(T) solving. The actual Boolean engine remains the embedded SAT backend.
  */
 
-static void trace_kernel_stats(smt_core_t *core, const char *when, uint32_t level) {
-  trace_printf(core->trace, level,
+static void trace_kernel_stats(egraph_t *egraph, const char *when, uint32_t level) {
+  th_sat_interface_t *sat;
+  void *backend;
+
+  sat = egraph_sat_api(egraph);
+  backend = egraph_backend(egraph);
+  trace_printf(egraph_trace(egraph), level,
                "(%-10s %8"PRIu64" %10"PRIu64" %8"PRIu64" %8"PRIu32" %8"PRIu32" %8"PRIu64" %8"PRIu32" %8"PRIu64" %7.1f)\n",
-               when, core->stats.conflicts, core->stats.decisions, core->stats.random_decisions,
-               num_binary_clauses(core), num_prob_clauses(core), num_prob_literals(core),
-               num_learned_clauses(core), num_learned_literals(core), avg_learned_clause_size(core));
+               when, sat->num_conflicts(backend), sat->num_decisions(backend),
+               sat->num_random_decisions(backend), sat->num_binary_clauses(backend),
+               sat->num_prob_clauses(backend), sat->num_prob_literals(backend),
+               sat->num_learned_clauses(backend), sat->num_learned_literals(backend),
+               sat->avg_learned_clause_size(backend));
 }
 
-static void trace_kernel_start(smt_core_t *core) {
-  trace_kernel_stats(core, "start:", 1);
+static void trace_kernel_start(egraph_t *egraph) {
+  trace_kernel_stats(egraph, "start:", 1);
 }
 
-static void trace_kernel_restart(smt_core_t *core) {
-  trace_kernel_stats(core, "restart:", 1);
+static void trace_kernel_restart(egraph_t *egraph) {
+  trace_kernel_stats(egraph, "restart:", 1);
 }
 
-static void trace_kernel_inner_restart(smt_core_t *core) {
-  trace_kernel_stats(core, "inner restart:", 5);
+static void trace_kernel_inner_restart(egraph_t *egraph) {
+  trace_kernel_stats(egraph, "inner restart:", 5);
 }
 
-static void trace_kernel_reduce(smt_core_t *core, uint64_t deleted) {
-  trace_kernel_stats(core, "reduce:", 3);
-  trace_printf(core->trace, 4, "(%"PRIu64" clauses deleted)\n", deleted);
+static void trace_kernel_reduce(egraph_t *egraph, uint64_t deleted) {
+  trace_kernel_stats(egraph, "reduce:", 3);
+  trace_printf(egraph_trace(egraph), 4, "(%"PRIu64" clauses deleted)\n", deleted);
 }
 
-static void trace_kernel_done(smt_core_t *core) {
-  trace_kernel_stats(core, "done:", 1);
-  trace_newline(core->trace, 1);
+static void trace_kernel_done(egraph_t *egraph) {
+  trace_kernel_stats(egraph, "done:", 1);
+  trace_newline(egraph_trace(egraph), 1);
 }
 
-static void process_kernel_assumption(smt_core_t *core, literal_t l) {
-  switch (literal_value(core, l)) {
+static bool egraph_kernel_quiesce(egraph_t *egraph, uint64_t max_conflicts) {
+  th_sat_interface_t *sat;
+  void *backend;
+  uint32_t trail_top;
+
+  sat = egraph_sat_api(egraph);
+  backend = egraph_backend(egraph);
+  assert(sat->status(backend) == YICES_STATUS_SEARCHING || sat->status(backend) == YICES_STATUS_INTERRUPTED);
+
+  while (sat->status(backend) == YICES_STATUS_SEARCHING) {
+    if (sat->inconsistent(backend)) {
+      if (! sat->resolve_conflict(backend)) {
+        return true;
+      }
+      if (sat->num_conflicts(backend) >= max_conflicts) {
+        return false;
+      }
+      continue;
+    }
+
+    if (sat->has_pending_gc(backend)) {
+      sat->collect_pending_gc(backend);
+      continue;
+    }
+
+    if (sat->has_pending_lemmas(backend)) {
+      sat->integrate_pending_lemmas(backend);
+      continue;
+    }
+
+    if (! sat->boolean_propagate(backend)) {
+      continue;
+    }
+
+    trail_top = sat->trail_top(backend);
+    if (! egraph_propagate(egraph)) {
+      continue;
+    }
+
+    if (sat->status(backend) != YICES_STATUS_SEARCHING) {
+      break;
+    }
+
+    if (sat->inconsistent(backend) ||
+        sat->has_pending_gc(backend) ||
+        sat->has_pending_lemmas(backend) ||
+        sat->trail_top(backend) != trail_top) {
+      continue;
+    }
+
+    break;
+  }
+
+  sat->maybe_simplify_clause_database(backend);
+  return true;
+}
+
+static bool kernel_run_final_check(egraph_t *egraph, uint64_t max_conflicts) {
+  th_sat_interface_t *sat;
+  void *backend;
+
+  sat = egraph_sat_api(egraph);
+  backend = egraph_backend(egraph);
+
+  switch (egraph_final_check(egraph)) {
+  case FCHECK_CONTINUE:
+    return egraph_kernel_quiesce(egraph, max_conflicts);
+  case FCHECK_SAT:
+    sat->set_status(backend, YICES_STATUS_SAT);
+    return true;
+  case FCHECK_UNKNOWN:
+    sat->set_status(backend, YICES_STATUS_UNKNOWN);
+    return true;
+  }
+
+  return true;
+}
+
+static void process_kernel_assumption(egraph_t *egraph, literal_t l, uint64_t max_conflicts) {
+  th_sat_interface_t *sat;
+  void *backend;
+
+  sat = egraph_sat_api(egraph);
+  backend = egraph_backend(egraph);
+  switch (sat->literal_value(backend, l)) {
   case VAL_UNDEF_FALSE:
   case VAL_UNDEF_TRUE:
-    decide_literal(core, l);
-    smt_process(core);
+    sat->decide_literal(backend, l);
+    (void) egraph_kernel_quiesce(egraph, max_conflicts);
     break;
 
   case VAL_TRUE:
     break;
 
   case VAL_FALSE:
-    save_conflicting_assumption(core, l);
+    sat->save_conflicting_assumption(backend, l);
     break;
   }
 }
 
-static void kernel_search_loop(smt_core_t *core, uint32_t conflict_bound,
+static void kernel_search_loop(egraph_t *egraph, uint32_t conflict_bound,
                                uint32_t *reduce_threshold, double r_factor) {
+  th_sat_interface_t *sat;
+  void *backend;
   uint64_t max_conflicts;
   uint64_t deletions;
   uint32_t r_threshold;
   literal_t l;
 
-  assert(smt_status(core) == YICES_STATUS_SEARCHING || smt_status(core) == YICES_STATUS_INTERRUPTED);
+  sat = egraph_sat_api(egraph);
+  backend = egraph_backend(egraph);
+  assert(sat->status(backend) == YICES_STATUS_SEARCHING || sat->status(backend) == YICES_STATUS_INTERRUPTED);
 
-  max_conflicts = num_conflicts(core) + conflict_bound;
+  max_conflicts = sat->num_conflicts(backend) + conflict_bound;
   r_threshold = *reduce_threshold;
 
-  smt_process(core);
-  while (smt_status(core) == YICES_STATUS_SEARCHING && num_conflicts(core) <= max_conflicts) {
-    if (num_learned_clauses(core) >= r_threshold) {
-      deletions = core->stats.learned_clauses_deleted;
-      reduce_clause_database(core);
+  (void) egraph_kernel_quiesce(egraph, UINT64_MAX);
+  while (sat->status(backend) == YICES_STATUS_SEARCHING && sat->num_conflicts(backend) <= max_conflicts) {
+    if (sat->num_learned_clauses(backend) >= r_threshold) {
+      deletions = sat->num_learned_clauses_deleted(backend);
+      sat->reduce_clause_database(backend);
       r_threshold = (uint32_t) (r_threshold * r_factor);
-      trace_kernel_reduce(core, core->stats.learned_clauses_deleted - deletions);
+      trace_kernel_reduce(egraph, sat->num_learned_clauses_deleted(backend) - deletions);
     }
 
-    if (core->has_assumptions) {
-      l = get_next_assumption(core);
+    if (sat->has_assumptions(backend)) {
+      l = sat->get_next_assumption(backend);
       if (l != null_literal) {
-        process_kernel_assumption(core, l);
+        process_kernel_assumption(egraph, l, UINT64_MAX);
         continue;
       }
     }
 
-    l = select_unassigned_literal(core);
+    l = sat->select_unassigned_literal(backend);
     if (l == null_literal) {
-      smt_final_check(core);
+      (void) kernel_run_final_check(egraph, UINT64_MAX);
     } else {
-      decide_literal(core, l);
-      smt_process(core);
+      sat->decide_literal(backend, l);
+      (void) egraph_kernel_quiesce(egraph, UINT64_MAX);
     }
   }
 
   *reduce_threshold = r_threshold;
 }
 
-static void kernel_luby_search_loop(smt_core_t *core, uint32_t conflict_bound,
+static void kernel_luby_search_loop(egraph_t *egraph, uint32_t conflict_bound,
                                     uint32_t *reduce_threshold, double r_factor) {
+  th_sat_interface_t *sat;
+  void *backend;
   uint64_t max_conflicts;
   uint64_t deletions;
   uint32_t r_threshold;
   literal_t l;
 
-  assert(smt_status(core) == YICES_STATUS_SEARCHING || smt_status(core) == YICES_STATUS_INTERRUPTED);
+  sat = egraph_sat_api(egraph);
+  backend = egraph_backend(egraph);
+  assert(sat->status(backend) == YICES_STATUS_SEARCHING || sat->status(backend) == YICES_STATUS_INTERRUPTED);
 
-  max_conflicts = num_conflicts(core) + conflict_bound;
+  max_conflicts = sat->num_conflicts(backend) + conflict_bound;
   r_threshold = *reduce_threshold;
 
-  smt_bounded_process(core, max_conflicts);
-  while (smt_status(core) == YICES_STATUS_SEARCHING && num_conflicts(core) < max_conflicts) {
-    if (num_learned_clauses(core) >= r_threshold) {
-      deletions = core->stats.learned_clauses_deleted;
-      reduce_clause_database(core);
+  (void) egraph_kernel_quiesce(egraph, max_conflicts);
+  while (sat->status(backend) == YICES_STATUS_SEARCHING && sat->num_conflicts(backend) < max_conflicts) {
+    if (sat->num_learned_clauses(backend) >= r_threshold) {
+      deletions = sat->num_learned_clauses_deleted(backend);
+      sat->reduce_clause_database(backend);
       r_threshold = (uint32_t) (r_threshold * r_factor);
-      trace_kernel_reduce(core, core->stats.learned_clauses_deleted - deletions);
+      trace_kernel_reduce(egraph, sat->num_learned_clauses_deleted(backend) - deletions);
     }
 
-    if (core->has_assumptions) {
-      l = get_next_assumption(core);
+    if (sat->has_assumptions(backend)) {
+      l = sat->get_next_assumption(backend);
       if (l != null_literal) {
-        process_kernel_assumption(core, l);
+        process_kernel_assumption(egraph, l, max_conflicts);
         continue;
       }
     }
 
-    l = select_unassigned_literal(core);
+    l = sat->select_unassigned_literal(backend);
     if (l == null_literal) {
-      smt_final_check(core);
+      if (! kernel_run_final_check(egraph, max_conflicts)) {
+        break;
+      }
     } else {
-      decide_literal(core, l);
-      smt_bounded_process(core, max_conflicts);
+      sat->decide_literal(backend, l);
+      if (! egraph_kernel_quiesce(egraph, max_conflicts)) {
+        break;
+      }
     }
   }
 
   *reduce_threshold = r_threshold;
 }
 
-typedef literal_t (*kernel_branching_fun_t)(smt_core_t *core, literal_t l);
+typedef literal_t (*kernel_branching_fun_t)(egraph_t *egraph, literal_t l);
 
-static literal_t negative_kernel_branch(smt_core_t *core, literal_t l) {
-  (void) core;
+static literal_t negative_kernel_branch(egraph_t *egraph, literal_t l) {
+  (void) egraph;
   return l | 1;
 }
 
-static literal_t positive_kernel_branch(smt_core_t *core, literal_t l) {
-  (void) core;
+static literal_t positive_kernel_branch(egraph_t *egraph, literal_t l) {
+  (void) egraph;
   return l & ~1;
 }
 
-static literal_t theory_kernel_branch(smt_core_t *core, literal_t l) {
-  if (bvar_has_atom(core, var_of(l))) {
-    l = core->th_smt.select_polarity(core->th_solver, get_bvar_atom(core, var_of(l)), l);
+static literal_t theory_kernel_branch(egraph_t *egraph, literal_t l) {
+  th_sat_interface_t *sat;
+  void *backend;
+
+  sat = egraph_sat_api(egraph);
+  backend = egraph_backend(egraph);
+  if (sat->bvar_has_atom(backend, var_of(l))) {
+    l = egraph_select_polarity(egraph, sat->bvar_atom(backend, var_of(l)), l);
   }
   return l;
 }
 
-static literal_t theory_or_neg_kernel_branch(smt_core_t *core, literal_t l) {
-  if (bvar_has_atom(core, var_of(l))) {
-    return core->th_smt.select_polarity(core->th_solver, get_bvar_atom(core, var_of(l)), l);
+static literal_t theory_or_neg_kernel_branch(egraph_t *egraph, literal_t l) {
+  th_sat_interface_t *sat;
+  void *backend;
+
+  sat = egraph_sat_api(egraph);
+  backend = egraph_backend(egraph);
+  if (sat->bvar_has_atom(backend, var_of(l))) {
+    return egraph_select_polarity(egraph, sat->bvar_atom(backend, var_of(l)), l);
   }
   return l | 1;
 }
 
-static literal_t theory_or_pos_kernel_branch(smt_core_t *core, literal_t l) {
-  if (bvar_has_atom(core, var_of(l))) {
-    return core->th_smt.select_polarity(core->th_solver, get_bvar_atom(core, var_of(l)), l);
+static literal_t theory_or_pos_kernel_branch(egraph_t *egraph, literal_t l) {
+  th_sat_interface_t *sat;
+  void *backend;
+
+  sat = egraph_sat_api(egraph);
+  backend = egraph_backend(egraph);
+  if (sat->bvar_has_atom(backend, var_of(l))) {
+    return egraph_select_polarity(egraph, sat->bvar_atom(backend, var_of(l)), l);
   }
   return l & ~1;
 }
 
-static void kernel_special_search_loop(smt_core_t *core, uint32_t conflict_bound,
+static void kernel_special_search_loop(egraph_t *egraph, uint32_t conflict_bound,
                                        uint32_t *reduce_threshold, double r_factor,
                                        kernel_branching_fun_t branch) {
+  th_sat_interface_t *sat;
+  void *backend;
   uint64_t max_conflicts;
   uint64_t deletions;
   uint32_t r_threshold;
   literal_t l;
 
-  assert(smt_status(core) == YICES_STATUS_SEARCHING || smt_status(core) == YICES_STATUS_INTERRUPTED);
+  sat = egraph_sat_api(egraph);
+  backend = egraph_backend(egraph);
+  assert(sat->status(backend) == YICES_STATUS_SEARCHING || sat->status(backend) == YICES_STATUS_INTERRUPTED);
 
-  max_conflicts = num_conflicts(core) + conflict_bound;
+  max_conflicts = sat->num_conflicts(backend) + conflict_bound;
   r_threshold = *reduce_threshold;
 
-  smt_process(core);
-  while (smt_status(core) == YICES_STATUS_SEARCHING && num_conflicts(core) <= max_conflicts) {
-    if (num_learned_clauses(core) >= r_threshold) {
-      deletions = core->stats.learned_clauses_deleted;
-      reduce_clause_database(core);
+  (void) egraph_kernel_quiesce(egraph, UINT64_MAX);
+  while (sat->status(backend) == YICES_STATUS_SEARCHING && sat->num_conflicts(backend) <= max_conflicts) {
+    if (sat->num_learned_clauses(backend) >= r_threshold) {
+      deletions = sat->num_learned_clauses_deleted(backend);
+      sat->reduce_clause_database(backend);
       r_threshold = (uint32_t) (r_threshold * r_factor);
-      trace_kernel_reduce(core, core->stats.learned_clauses_deleted - deletions);
+      trace_kernel_reduce(egraph, sat->num_learned_clauses_deleted(backend) - deletions);
     }
 
-    if (core->has_assumptions) {
-      l = get_next_assumption(core);
+    if (sat->has_assumptions(backend)) {
+      l = sat->get_next_assumption(backend);
       if (l != null_literal) {
-        process_kernel_assumption(core, l);
+        process_kernel_assumption(egraph, l, UINT64_MAX);
         continue;
       }
     }
 
-    l = select_unassigned_literal(core);
+    l = sat->select_unassigned_literal(backend);
     if (l == null_literal) {
-      smt_final_check(core);
+      (void) kernel_run_final_check(egraph, UINT64_MAX);
     } else {
-      l = branch(core, l);
-      decide_literal(core, l);
-      smt_process(core);
+      l = branch(egraph, l);
+      sat->decide_literal(backend, l);
+      (void) egraph_kernel_quiesce(egraph, UINT64_MAX);
     }
   }
 
@@ -7959,14 +8253,16 @@ static void kernel_special_search_loop(smt_core_t *core, uint32_t conflict_bound
 
 static void egraph_run_kernel_search(egraph_t *egraph, const param_t *params,
                                      uint32_t n, const literal_t *a) {
-  smt_core_t *core;
+  th_sat_interface_t *sat;
+  void *backend;
   bool luby;
   uint32_t c_threshold, d_threshold;
   uint32_t u, v, period;
   uint32_t reduce_threshold;
 
-  core = egraph_backend(egraph);
-  assert(core->th_solver == egraph);
+  sat = egraph_sat_api(egraph);
+  backend = egraph_backend(egraph);
+  assert(sat_kernel_is_attached(&egraph->sat));
 
   c_threshold = params->c_threshold;
   d_threshold = c_threshold;
@@ -7980,50 +8276,50 @@ static void egraph_run_kernel_search(egraph_t *egraph, const param_t *params,
     luby = params->c_factor == 0.0;
   }
 
-  reduce_threshold = (uint32_t) (num_prob_clauses(core) * params->r_fraction);
+  reduce_threshold = (uint32_t) (sat->num_prob_clauses(backend) * params->r_fraction);
   if (reduce_threshold < params->r_threshold) {
     reduce_threshold = params->r_threshold;
   }
 
-  start_search(core, n, a);
-  trace_kernel_start(core);
-  if (smt_status(core) == YICES_STATUS_SEARCHING) {
+  sat->start_search(backend, n, a);
+  trace_kernel_start(egraph);
+  if (sat->status(backend) == YICES_STATUS_SEARCHING) {
     for (;;) {
       switch (params->branching) {
       case BRANCHING_DEFAULT:
         if (luby) {
-          kernel_luby_search_loop(core, c_threshold, &reduce_threshold, params->r_factor);
+          kernel_luby_search_loop(egraph, c_threshold, &reduce_threshold, params->r_factor);
         } else {
-          kernel_search_loop(core, c_threshold, &reduce_threshold, params->r_factor);
+          kernel_search_loop(egraph, c_threshold, &reduce_threshold, params->r_factor);
         }
         break;
       case BRANCHING_NEGATIVE:
-        kernel_special_search_loop(core, c_threshold, &reduce_threshold, params->r_factor,
+        kernel_special_search_loop(egraph, c_threshold, &reduce_threshold, params->r_factor,
                                    negative_kernel_branch);
         break;
       case BRANCHING_POSITIVE:
-        kernel_special_search_loop(core, c_threshold, &reduce_threshold, params->r_factor,
+        kernel_special_search_loop(egraph, c_threshold, &reduce_threshold, params->r_factor,
                                    positive_kernel_branch);
         break;
       case BRANCHING_THEORY:
-        kernel_special_search_loop(core, c_threshold, &reduce_threshold, params->r_factor,
+        kernel_special_search_loop(egraph, c_threshold, &reduce_threshold, params->r_factor,
                                    theory_kernel_branch);
         break;
       case BRANCHING_TH_NEG:
-        kernel_special_search_loop(core, c_threshold, &reduce_threshold, params->r_factor,
+        kernel_special_search_loop(egraph, c_threshold, &reduce_threshold, params->r_factor,
                                    theory_or_neg_kernel_branch);
         break;
       case BRANCHING_TH_POS:
-        kernel_special_search_loop(core, c_threshold, &reduce_threshold, params->r_factor,
+        kernel_special_search_loop(egraph, c_threshold, &reduce_threshold, params->r_factor,
                                    theory_or_pos_kernel_branch);
         break;
       }
 
-      if (smt_status(core) != YICES_STATUS_SEARCHING) {
+      if (sat->status(backend) != YICES_STATUS_SEARCHING) {
         break;
       }
 
-      smt_restart(core);
+      sat->restart(backend);
 
       if (luby) {
         if ((u & -u) == v) {
@@ -8033,7 +8329,7 @@ static void egraph_run_kernel_search(egraph_t *egraph, const param_t *params,
           v <<= 1;
         }
         c_threshold = v * period;
-        trace_kernel_restart(core);
+        trace_kernel_restart(egraph);
 
       } else {
         c_threshold = (uint32_t) (c_threshold * params->c_factor);
@@ -8044,31 +8340,33 @@ static void egraph_run_kernel_search(egraph_t *egraph, const param_t *params,
             c_threshold = params->c_threshold;
             d_threshold = (uint32_t) (d_threshold * params->d_factor);
           }
-          trace_kernel_restart(core);
+          trace_kernel_restart(egraph);
         } else {
-          trace_kernel_inner_restart(core);
+          trace_kernel_inner_restart(egraph);
         }
       }
     }
   }
 
-  trace_kernel_done(core);
+  trace_kernel_done(egraph);
 }
 
 smt_status_t egraph_search(egraph_t *egraph, const param_t *params,
                            uint32_t n, const literal_t *a) {
-  smt_core_t *core;
+  th_sat_interface_t *sat;
+  void *backend;
 
   if (params == NULL) {
     params = get_default_params();
   }
 
-  core = egraph_backend(egraph);
-  if (smt_status(core) == YICES_STATUS_IDLE) {
+  sat = egraph_sat_api(egraph);
+  backend = egraph_backend(egraph);
+  if (sat->status(backend) == YICES_STATUS_IDLE) {
     egraph_run_kernel_search(egraph, params, n, a);
   }
 
-  return smt_status(core);
+  return sat->status(backend);
 }
 
 
@@ -8821,7 +9119,7 @@ static value_t egraph_value_of_class(egraph_t *egraph, value_table_t *vtbl, clas
      * the bool_constant_class. So the value[c] must be true.
      */
     assert(c == bool_constant_class &&
-           bvar_value(egraph->core, egraph_class_thvar(egraph, c)) == VAL_TRUE);
+           egraph_bvar_value(egraph, egraph_class_thvar(egraph, c)) == VAL_TRUE);
     v = vtbl_mk_true(vtbl);
     break;
 
