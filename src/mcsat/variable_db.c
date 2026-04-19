@@ -341,7 +341,7 @@ bool variable_db_is_variable(const variable_db_t* var_db, variable_t var, bool a
     assert(!assert);
     return false;
   }
-  if (var > variable_db_size(var_db)) {
+  if (var_db->shared_state == NULL && var >= var_db->variable_to_term_map.size) {
     assert(!assert);
     return false;
   }
