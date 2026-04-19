@@ -29,7 +29,6 @@ void variable_db_construct(variable_db_t* var_db, term_table_t* terms, type_tabl
   var_db->types = types;
   var_db->tracer = tracer;
   var_db->shared_state = shared_state;
-  var_db->shared_notified_upto = variable_null;
 
   init_ivector(&var_db->variable_to_term_map, 0);
   init_int_hmap(&var_db->term_to_variable_map, 0);
@@ -49,14 +48,30 @@ void variable_db_destruct(variable_db_t* var_db) {
 }
 
 bool variable_db_has_variable(const variable_db_t* var_db, term_t x) {
-  if (var_db->shared_state != NULL) {
-    return mcsat_shared_state_lookup_variable(var_db->shared_state, x) != variable_null;
-  }
+  int_hmap_pair_t* find;
+  variable_t shared_x;
 
   assert(is_pos_term(x));
-  int_hmap_pair_t* find;
   find = int_hmap_find((int_hmap_t*) &var_db->term_to_variable_map, x);
-  return find != NULL;
+  if (find != NULL) {
+    return true;
+  }
+  if (var_db->shared_state == NULL) {
+    return false;
+  }
+
+  shared_x = mcsat_shared_state_lookup_variable(var_db->shared_state, x);
+  if (shared_x == variable_null) {
+    return false;
+  }
+
+  if (shared_x >= var_db->variable_to_term_map.size) {
+    variable_db_get_term_if_exists(var_db, shared_x);
+  } else if (var_db->variable_to_term_map.data[shared_x] == NULL_TERM) {
+    variable_db_get_term_if_exists(var_db, shared_x);
+  }
+
+  return true;
 }
 
 static void variable_db_notify_new_variable(variable_db_t* var_db, variable_t x) {
@@ -70,15 +85,32 @@ static void variable_db_notify_new_variable(variable_db_t* var_db, variable_t x)
 }
 
 static
-void variable_db_sync_shared_to(variable_db_t* var_db, variable_t x) {
-  while (var_db->shared_notified_upto < x) {
-    term_t term;
+void variable_db_ensure_slot(variable_db_t* var_db, variable_t x) {
+  while (var_db->variable_to_term_map.size <= x) {
+    ivector_push(&var_db->variable_to_term_map, NULL_TERM);
+  }
+}
 
-    var_db->shared_notified_upto ++;
-    term = mcsat_shared_state_get_variable_term(var_db->shared_state, var_db->shared_notified_upto);
-    if (term != NULL_TERM) {
-      variable_db_notify_new_variable(var_db, var_db->shared_notified_upto);
-    }
+static
+void variable_db_track_shared_variable(variable_db_t* var_db, variable_t x, term_t term) {
+  int_hmap_pair_t* find;
+
+  assert(x != variable_null);
+  assert(is_pos_term(term));
+
+  variable_db_ensure_slot(var_db, x);
+  if (var_db->variable_to_term_map.data[x] == NULL_TERM) {
+    var_db->variable_to_term_map.data[x] = term;
+  } else {
+    assert(var_db->variable_to_term_map.data[x] == term);
+  }
+
+  find = int_hmap_find(&var_db->term_to_variable_map, term);
+  if (find == NULL) {
+    int_hmap_add(&var_db->term_to_variable_map, term, x);
+    variable_db_notify_new_variable(var_db, x);
+  } else {
+    assert(find->val == x);
   }
 }
 
@@ -92,7 +124,7 @@ variable_t variable_db_get_variable(variable_db_t* var_db, term_t term) {
   if (var_db->shared_state != NULL) {
     x = mcsat_shared_state_get_variable(var_db->shared_state, term, NULL);
     if (x != variable_null) {
-      variable_db_sync_shared_to(var_db, x);
+      variable_db_track_shared_variable(var_db, x, term);
     }
     return x;
   }
@@ -100,26 +132,25 @@ variable_t variable_db_get_variable(variable_db_t* var_db, term_t term) {
   find = int_hmap_find(&var_db->term_to_variable_map, term);
   if (find != NULL) {
     return find->val;
-  } else {
-
-    // New id and forward map
-    if (var_db->free_list.size > 0) {
-      x = ivector_pop2(&var_db->free_list);
-      assert(var_db->variable_to_term_map.data[x] == NULL_TERM);
-      var_db->variable_to_term_map.data[x] = term;
-    } else {
-      x = var_db->variable_to_term_map.size;
-      ivector_push(&var_db->variable_to_term_map, term);
-    }
-
-    // Back map
-    assert(int_hmap_find(&var_db->term_to_variable_map, term) == NULL);
-    int_hmap_add(&var_db->term_to_variable_map, term, x);
-    // Notify
-    variable_db_notify_new_variable(var_db, x);
-
-    return x;
   }
+
+  // New id and forward map
+  if (var_db->free_list.size > 0) {
+    x = ivector_pop2(&var_db->free_list);
+    assert(var_db->variable_to_term_map.data[x] == NULL_TERM);
+    var_db->variable_to_term_map.data[x] = term;
+  } else {
+    x = var_db->variable_to_term_map.size;
+    ivector_push(&var_db->variable_to_term_map, term);
+  }
+
+  // Back map
+  assert(int_hmap_find(&var_db->term_to_variable_map, term) == NULL);
+  int_hmap_add(&var_db->term_to_variable_map, term, x);
+  // Notify
+  variable_db_notify_new_variable(var_db, x);
+
+  return x;
 }
 
 static inline
@@ -147,13 +178,14 @@ void variable_db_remove_variable(variable_db_t* var_db, variable_t x) {
 
 variable_t variable_db_get_variable_if_exists(const variable_db_t* var_db, term_t term) {
   int_hmap_pair_t* find;
+  variable_t x;
 
   assert(is_pos_term(term));
 
   if (var_db->shared_state != NULL) {
-    variable_t x = mcsat_shared_state_lookup_variable(var_db->shared_state, term);
+    x = mcsat_shared_state_lookup_variable((mcsat_shared_state_t*) var_db->shared_state, term);
     if (x != variable_null) {
-      variable_db_sync_shared_to((variable_db_t*) var_db, x);
+      variable_db_track_shared_variable((variable_db_t*) var_db, x, term);
     }
     return x;
   }
@@ -161,9 +193,9 @@ variable_t variable_db_get_variable_if_exists(const variable_db_t* var_db, term_
   find = int_hmap_find((int_hmap_t*) &var_db->term_to_variable_map, term);
   if (find != NULL) {
     return find->val;
-  } else {
-    return variable_null;
   }
+
+  return variable_null;
 }
 
 void variable_db_add_new_variable_listener(variable_db_t* var_db, variable_db_new_variable_notify_t* listener) {
@@ -171,17 +203,29 @@ void variable_db_add_new_variable_listener(variable_db_t* var_db, variable_db_ne
 }
 
 uint32_t variable_db_size(const variable_db_t* var_db) {
-  if (var_db->shared_state != NULL) {
-    return mcsat_shared_state_variable_limit(var_db->shared_state);
-  }
-
   // Deduct the freed ones and the null variable
   return var_db->variable_to_term_map.size - var_db->free_list.size - 1;
 }
 
 term_t variable_db_get_term_if_exists(const variable_db_t* var_db, variable_t x) {
+  term_t term;
+
   if (var_db->shared_state != NULL) {
-    return mcsat_shared_state_get_variable_term(var_db->shared_state, x);
+    if (x <= 0) {
+      return NULL_TERM;
+    }
+    if (x < var_db->variable_to_term_map.size) {
+      term = var_db->variable_to_term_map.data[x];
+      if (term != NULL_TERM) {
+        return term;
+      }
+    }
+
+    term = mcsat_shared_state_get_variable_term((mcsat_shared_state_t*) var_db->shared_state, x);
+    if (term != NULL_TERM) {
+      variable_db_track_shared_variable((variable_db_t*) var_db, x, term);
+    }
+    return term;
   }
 
   if (x <= 0 || x >= var_db->variable_to_term_map.size) {

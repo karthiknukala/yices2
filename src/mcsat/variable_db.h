@@ -59,9 +59,6 @@ struct variable_db_s {
 
   /** Optional shared registry used by parallel MCSAT workers */
   mcsat_shared_state_t* shared_state;
-
-  /** Highest shared variable id already announced to local listeners */
-  variable_t shared_notified_upto;
 };
 
 typedef struct variable_db_s variable_db_t;

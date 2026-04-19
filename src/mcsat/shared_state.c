@@ -552,8 +552,6 @@ mcsat_shared_state_t* mcsat_shared_state_acquire(term_table_t* terms, type_table
 }
 
 void mcsat_shared_state_release(mcsat_shared_state_t* state) {
-  bool destroy = false;
-
   if (state == NULL) {
     return;
   }
@@ -561,16 +559,8 @@ void mcsat_shared_state_release(mcsat_shared_state_t* state) {
   pthread_mutex_lock(&global_shared_state_lock);
   assert(state->refcount > 0);
   state->refcount --;
-  if (state->refcount == 0) {
-    assert(global_shared_state == state);
-    global_shared_state = NULL;
-    destroy = true;
-  }
+  assert(global_shared_state == state);
   pthread_mutex_unlock(&global_shared_state_lock);
-
-  if (destroy) {
-    shared_state_destroy(state);
-  }
 }
 
 bool mcsat_shared_state_is_enabled(const mcsat_shared_state_t* state) {

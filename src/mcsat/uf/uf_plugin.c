@@ -456,6 +456,14 @@ void uf_plugin_decide(plugin_t* plugin, variable_t x, trail_token_t* decide, boo
 
   // Pick a value not in the forbidden set
   term_t x_term = variable_db_get_term(uf->ctx->var_db, x);
+  if (!eq_graph_has_term(&uf->eq_graph, x_term)) {
+    /*
+     * Shared variable catch-up can make a worker aware of a UF term before the
+     * queued registration callback has rebuilt the equality graph entry. Add it
+     * on demand so decisions only inspect registered UF state.
+     */
+    uf_plugin_add_to_eq_graph(uf, x_term, true);
+  }
   pvector_t forbidden;
   init_pvector(&forbidden, 0);
   bool cache_ok = eq_graph_get_forbidden(&uf->eq_graph, x_term, &forbidden, x_cached_value);
