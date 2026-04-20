@@ -3682,6 +3682,47 @@ static th_ctrl_interface_t fsolver_control = {
   (clear_fun_t) fun_solver_clear,
 };
 
+static void fun_solver_ingest_hub_fact(fun_solver_t *solver, egraph_fact_kind_t kind, uint32_t n,
+                                       const int32_t *a, int32_t id, composite_t *hint, void *payload) {
+  (void) payload;
+
+  switch (kind) {
+  case EGRAPH_FACT_VAR_EQ:
+    assert(n == 2);
+    fun_solver_assert_var_eq(solver, a[0], a[1], id);
+    break;
+
+  case EGRAPH_FACT_VAR_DISEQ:
+    assert(n == 2);
+    fun_solver_assert_var_diseq(solver, a[0], a[1], hint);
+    break;
+
+  case EGRAPH_FACT_VAR_DISTINCT:
+    fun_solver_assert_var_distinct(solver, n, (thvar_t *) a, hint);
+    break;
+
+  default:
+    assert(false);
+    break;
+  }
+}
+
+static bool fun_solver_run_hub_propagation(fun_solver_t *solver) {
+  return fun_solver_propagate(solver);
+}
+
+static fcheck_code_t fun_solver_run_hub_final_check(fun_solver_t *solver) {
+  return fun_solver_final_check(solver);
+}
+
+static th_hub_interface_t fsolver_hub = {
+  NULL,
+  (hub_ingest_fact_fun_t) fun_solver_ingest_hub_fact,
+  NULL,
+  (hub_run_propagation_fun_t) fun_solver_run_hub_propagation,
+  (hub_run_final_check_fun_t) fun_solver_run_hub_final_check,
+};
+
 static th_egraph_interface_t fsolver_egraph = {
   (assert_eq_fun_t) fun_solver_assert_var_eq,
   (assert_diseq_fun_t) fun_solver_assert_var_diseq,
@@ -3699,6 +3740,7 @@ static th_egraph_interface_t fsolver_egraph = {
   (attach_to_var_fun_t) fun_solver_attach_eterm,
   (get_eterm_fun_t) fun_solver_get_eterm_of_var,
   (select_eq_polarity_fun_t) fun_solver_select_eq_polarity,
+  &fsolver_hub,
 };
 
 

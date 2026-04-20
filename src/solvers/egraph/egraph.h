@@ -329,6 +329,8 @@ extern eterm_t egraph_make_tuple(egraph_t *egraph, uint32_t n, occ_t *a, type_t 
 extern literal_t egraph_make_pred(egraph_t *egraph, occ_t f, uint32_t n, occ_t *a);
 extern literal_t egraph_make_eq(egraph_t *egraph, occ_t t1, occ_t t2);
 extern literal_t egraph_make_distinct(egraph_t *egraph, uint32_t n, occ_t *a);
+extern eterm_t egraph_make_boolean_apply_term(egraph_t *egraph, occ_t f, uint32_t n, occ_t *a);
+extern eterm_t egraph_make_boolean_eq_term(egraph_t *egraph, occ_t t1, occ_t t2);
 
 
 /*

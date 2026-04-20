@@ -1636,6 +1636,8 @@ static inline const rational_t* arith_get_mod(term_table_t *table, term_t t) {
 static value_t eval_term(evaluator_t *eval, term_t t) {
   term_table_t *terms;
   bool negative;
+  type_t tau;
+  int32_t i;
   value_t v;
   term_kind_t t_kind;
 
@@ -1661,8 +1663,22 @@ static value_t eval_term(evaluator_t *eval, term_t t) {
         } else if (t == false_term) {
           v = vtbl_mk_false(eval->vtbl);
         } else {
-          v = vtbl_mk_const(eval->vtbl, term_type(terms, t), constant_term_index(terms, t),
-                            term_name(terms, t));
+          tau = term_type(terms, t);
+          i = constant_term_index(terms, t);
+          if (i >= 0) {
+            switch (type_kind(eval->vtbl->type_table, tau)) {
+            case SCALAR_TYPE:
+            case UNINTERPRETED_TYPE:
+            case INSTANCE_TYPE:
+              v = vtbl_mk_const(eval->vtbl, tau, i, term_name(terms, t));
+              break;
+            default:
+              v = vtbl_make_object(eval->vtbl, tau);
+              break;
+            }
+          } else {
+            v = vtbl_make_object(eval->vtbl, tau);
+          }
         }
         break;
 

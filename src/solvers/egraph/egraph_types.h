@@ -918,10 +918,12 @@ typedef struct egraph_trail_stack_s {
  *    Must return true if x1 and x2 have the same value in the model and false if
  *    they have different values. (So the model must assign a value to all theory variables).
  *
- * 6c) void gen_interface_lemma(void *solver, literal_t l, thvar_t x1, thvar_t x2, bool equiv)
+ * 6c) bool gen_interface_lemma(void *solver, literal_t l, thvar_t x1, thvar_t x2, bool equiv)
  *
  *    Ask the theory solver to create a lemmas of the form (l => x1 /= x2).
  *    If equiv is true, then the solver can also create the reverse implication:  (x1 /= x2 => l).
+ *    The function must return true if it emitted a new lemma and false if the request
+ *    was redundant and produced no new clause.
  *
  * 6d) void release_model(void *solver)
  *
@@ -1144,13 +1146,14 @@ typedef void (*expand_eq_exp_fun_t)(void *satellite, thvar_t x1, thvar_t x2, voi
 typedef uint32_t (*reconcile_model_fun_t)(void *satellite, uint32_t max_eq);
 typedef void (*prepare_model_fun_t)(void *satellite);
 typedef bool (*equal_in_model_fun_t)(void *satellite, thvar_t x1, thvar_t x2);
-typedef void (*gen_inter_lemma_fun_t)(void *satellite, literal_t l, thvar_t x1, thvar_t x2, bool equiv);
+typedef bool (*gen_inter_lemma_fun_t)(void *satellite, literal_t l, thvar_t x1, thvar_t x2, bool equiv);
 typedef void (*release_model_fun_t)(void *satellite);
 typedef ipart_t *(*build_partition_fun_t)(void *satellite);
 typedef void (*free_partition_fun_t)(void *satellite, ipart_t *partition);
 typedef void (*attach_to_var_fun_t)(void *satellite, thvar_t x, eterm_t t);
 typedef eterm_t (*get_eterm_fun_t)(void *satellite, thvar_t x);
 typedef literal_t (*select_eq_polarity_fun_t)(void *satellite, thvar_t x, thvar_t y, literal_t l);
+typedef eterm_t (*hub_atom_term_fun_t)(void *satellite, void *payload);
 typedef void (*hub_ingest_fact_fun_t)(void *satellite, egraph_fact_kind_t kind, uint32_t arity,
                                       const int32_t *a, int32_t id, composite_t *hint, void *payload);
 typedef bool (*hub_has_pending_work_fun_t)(void *satellite);
@@ -1158,6 +1161,7 @@ typedef bool (*hub_run_propagation_fun_t)(void *satellite);
 typedef fcheck_code_t (*hub_run_final_check_fun_t)(void *satellite);
 
 typedef struct th_hub_interface_s {
+  hub_atom_term_fun_t        atom_term;
   hub_ingest_fact_fun_t      ingest_fact;
   hub_has_pending_work_fun_t has_pending_work;
   hub_run_propagation_fun_t  run_propagation;

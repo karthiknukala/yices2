@@ -1050,6 +1050,28 @@ static hub_atom_t *create_hub_atom_binding(egraph_t *egraph, etype_t owner, void
   return binding;
 }
 
+static inline th_hub_interface_t *egraph_satellite_hub(egraph_t *egraph, etype_t owner) {
+  if (owner < NUM_SATELLITES && egraph->eg[owner] != NULL) {
+    return egraph->eg[owner]->hub;
+  }
+  return NULL;
+}
+
+static eterm_t egraph_hub_atom_term(egraph_t *egraph, hub_atom_t *binding) {
+  th_hub_interface_t *hub;
+
+  if (binding->reified_eterm != null_eterm) {
+    return binding->reified_eterm;
+  }
+
+  hub = egraph_satellite_hub(egraph, binding->owner);
+  if (hub != NULL && hub->atom_term != NULL) {
+    binding->reified_eterm = hub->atom_term(egraph->th[binding->owner], binding->payload);
+  }
+
+  return binding->reified_eterm;
+}
+
 
 /*
  * Swap the successors of atom1 and atom2
@@ -2546,6 +2568,39 @@ static bool egraph_term_asserted_false(egraph_t *egraph, eterm_t t) {
 
 #endif
 
+/*
+ * Link a fresh SAT literal for an already-active Boolean term t.
+ * - if the class of t already has a Boolean representative x, add clauses
+ *   that keep the fresh literal equivalent to x (or to not x).
+ * - otherwise, make the fresh literal the class representative.
+ */
+static void egraph_attach_literal_to_existing_boolean_term(egraph_t *egraph, eterm_t t, bvar_t v) {
+  class_t c;
+  thvar_t x;
+  atom_t *atom;
+  occ_t u;
+
+  c = egraph_term_class(egraph, t);
+  x = egraph_class_thvar(egraph, c);
+  if (x == null_thvar) {
+    egraph->classes.thvar[c] = v;
+    return;
+  }
+
+  atom = get_egraph_atom_for_bvar(egraph, x);
+  assert(atom != NULL);
+
+  u = pos_occ(atom->eterm);
+  if (egraph_equal_occ(egraph, pos_occ(t), u)) {
+    egraph_add_binary_clause(egraph, pos_lit(v), neg_lit(x));
+    egraph_add_binary_clause(egraph, neg_lit(v), pos_lit(x));
+  } else {
+    assert(egraph_opposite_occ(egraph, pos_occ(t), u));
+    egraph_add_binary_clause(egraph, pos_lit(v), pos_lit(x));
+    egraph_add_binary_clause(egraph, neg_lit(v), neg_lit(x));
+  }
+}
+
 
 /*
  * Atoms (type = BOOL, theory variable = a fresh boolean variable)
@@ -2568,29 +2623,77 @@ static literal_t egraph_term2literal(egraph_t *egraph, eterm_t t) {
     assert(v != null_thvar && egraph_term_type(egraph, t) == ETYPE_BOOL);
 #else
     /*
-     * Hackish: this assumes that all existing boolean terms with no
-     * theory variables attached are equalities asserted false (via
-     * egraph_assert_diseq_axiom) at the base level.
+     * Existing Boolean terms may be structural hub terms with no literal yet.
+     * The old null_thvar => false_literal shortcut only remains valid for
+     * base-level disequality axioms created without an attached atom.
      */
     assert(egraph_term_type(egraph, t) == ETYPE_BOOL);
     v = egraph->terms.thvar[t];
     if (v == null_thvar) {
-      /*
-       * This assertion is wrong: the equality t == false may not
-       * be processed yet (i.e., still in the queue). If that's the
-       * case, egraph_term_is_false(egraph, t) will return false and
-       * the assertion will fail.
-       */
-      // assert(egraph_term_is_eq(egraph, t) && egraph_term_is_false(egraph, t));
-      assert(egraph_term_is_eq(egraph, t));
-      assert(egraph_term_is_false(egraph, t) || egraph_term_asserted_false(egraph, t));
+      bool asserted_false;
 
-      return false_literal;
+      asserted_false = false;
+#ifndef NDEBUG
+      asserted_false = egraph_term_asserted_false(egraph, t);
+#endif
+
+      if (egraph->decision_level == egraph->base_level &&
+          egraph_term_is_eq(egraph, t) &&
+          (egraph_term_is_false(egraph, t) || asserted_false)) {
+        return false_literal;
+      }
+
+      v = egraph_new_boolean_variable(egraph);
+      create_egraph_atom(egraph, v, t);
+      egraph->terms.thvar[t] = v;
+      egraph_attach_literal_to_existing_boolean_term(egraph, t, v);
     }
 #endif
   }
 
   return pos_lit(v);
+}
+
+eterm_t egraph_make_boolean_apply_term(egraph_t *egraph, occ_t f, uint32_t n, occ_t *a) {
+  eterm_t t;
+
+  t = egraph_apply_term(egraph, f, n, a);
+  if (egraph_term_is_fresh(egraph, t)) {
+    egraph_set_term_real_type(egraph, t, bool_type(egraph->types));
+    egraph_activate_term(egraph, t, ETYPE_BOOL, null_thvar);
+  }
+
+  return t;
+}
+
+eterm_t egraph_make_boolean_eq_term(egraph_t *egraph, occ_t t1, occ_t t2) {
+  occ_t aux;
+  eterm_t t;
+
+  if (t1 == t2) {
+    return term_of_occ(true_occ);
+  }
+
+  if (egraph->base_level == egraph->decision_level
+      && (! egraph->reconcile_mode || egraph->stack.top == egraph->reconcile_neqs)) {
+    if (egraph_equal_occ(egraph, t1, t2)) {
+      return term_of_occ(true_occ);
+    }
+  }
+
+  if (t1 > t2) {
+    aux = t1;
+    t1 = t2;
+    t2 = aux;
+  }
+
+  t = egraph_eq_term(egraph, t1, t2);
+  if (egraph_term_is_fresh(egraph, t)) {
+    egraph_set_term_real_type(egraph, t, bool_type(egraph->types));
+    egraph_activate_term(egraph, t, ETYPE_BOOL, null_thvar);
+  }
+
+  return t;
 }
 
 
@@ -3323,10 +3426,21 @@ eterm_t egraph_bvar2term(egraph_t *egraph, bvar_t v) {
 
     case HUB_ATM_TAG:
       binding = (hub_atom_t *) untag_atom(raw_atom);
-      if (binding->reified_eterm != null_eterm) {
-        return binding->reified_eterm;
+      t = egraph_hub_atom_term(egraph, binding);
+      if (t != null_eterm) {
+        return t;
       }
-      break;
+      /*
+       * Hub-owned atoms without a structural encoding still need a stable
+       * boolean term so the egraph can track their truth value. Unlike raw
+       * satellite atoms, we don't need a proxy SAT variable here because the
+       * hub already routes assignments through dispatch_attached_literal.
+       */
+      t = new_eterm(&egraph->terms, VARIABLE_BODY);
+      egraph_set_term_real_type(egraph, t, bool_type(egraph->types));
+      egraph_activate_term(egraph, t, ETYPE_BOOL, null_thvar);
+      binding->reified_eterm = t;
+      return t;
 
     default:
       break;
@@ -3672,10 +3786,7 @@ static bool publish_satellite_fact(egraph_t *egraph, etype_t i, egraph_fact_kind
                                    composite_t *hint, void *payload);
 
 static inline th_hub_interface_t *satellite_hub(egraph_t *egraph, etype_t i) {
-  if (i < NUM_SATELLITES && egraph->eg[i] != NULL) {
-    return egraph->eg[i]->hub;
-  }
-  return NULL;
+  return egraph_satellite_hub(egraph, i);
 }
 
 /*
@@ -4704,7 +4815,14 @@ void egraph_start_search(egraph_t *egraph) {
   reset_satellite_worklists(egraph);
   reset_eassertion_queue(&egraph->backend_outbox);
   ivector_reset(&egraph->backend_buffer);
-  egraph->sat_sync_ptr = egraph_sat_api(egraph)->trail_theory_ptr(egraph_backend(egraph));
+  /*
+   * The egraph-owned hub must reconstruct the full current theory state when
+   * search begins. Reusing the embedded SAT kernel's legacy theory_ptr skips
+   * base-level literals that were already on the trail before the hub starts,
+   * which leaves satellites missing required facts. Replay the whole current
+   * trail instead.
+   */
+  egraph->sat_sync_ptr = 0;
 
   for (i=0; i<NUM_SATELLITES; i++) {
     if (egraph->ctrl[i] != NULL) {
@@ -5177,13 +5295,19 @@ static void egraph_local_backtrack(egraph_t *egraph, uint32_t back_level) {
  */
 void egraph_backtrack(egraph_t *egraph, uint32_t back_level) {
   uint32_t i;
-
   egraph_local_backtrack(egraph, back_level);
   ivector_reset(&egraph->clause_buffer);
   reset_satellite_worklists(egraph);
   reset_eassertion_queue(&egraph->backend_outbox);
   ivector_reset(&egraph->backend_buffer);
-  egraph->sat_sync_ptr = egraph_sat_api(egraph)->trail_top(egraph_backend(egraph));
+  /*
+   * After backjumping, retained SAT literals may need to be replayed into the
+   * satellites even if they were dispatched earlier: a satellite can drop the
+   * corresponding assertion when it backtracks using its own level stack, while
+   * SAT keeps the literal on the trail after learning/backjumping. Replaying
+   * the current trail keeps the hub and satellites synchronized.
+   */
+  egraph->sat_sync_ptr = 0;
   if (back_level == egraph->base_level && egraph->reanalyze_vector.size > 0) {
     egraph_reactivate_dynamic_terms(egraph);
   }
@@ -5528,6 +5652,9 @@ literal_t egraph_find_eq(egraph_t *egraph, occ_t t1, occ_t t2) {
   eterm_t eq;
   bvar_t v;
   literal_t l;
+#ifndef NDEBUG
+  bool asserted_false;
+#endif
 
   if (t1 > t2) {
     aux = t1; t1 = t2; t2 = aux;
@@ -5542,10 +5669,24 @@ literal_t egraph_find_eq(egraph_t *egraph, occ_t t1, occ_t t2) {
     assert(v != null_thvar);
     l = pos_lit(v);
 #else
-    // null_thvar is possible if (eq t1 t2) is false at the top level
+    /*
+     * null_thvar is possible in two cases:
+     * 1. the equality was asserted false as a top-level axiom
+     * 2. the equality exists only as a structural boolean term with no
+     *    SAT literal attached yet.
+     */
     if (v == null_thvar) {
-      assert(egraph_term_is_false(egraph, eq) || egraph_term_asserted_false(egraph, eq));
-      l = false_literal; // eq is asserted as an axiom, so its literal is false
+      if (egraph_term_is_false(egraph, eq)) {
+        l = false_literal; // eq is asserted as an axiom, so its literal is false
+#ifndef NDEBUG
+      } else {
+        asserted_false = egraph_term_asserted_false(egraph, eq);
+        assert(! asserted_false || ! egraph_term_is_fresh(egraph, eq));
+        if (asserted_false) {
+          l = false_literal;
+        }
+#endif
+      }
     } else {
       l = pos_lit(v);
     }
@@ -5814,40 +5955,45 @@ static uint32_t egraph_gen_interface_lemmas(egraph_t *egraph, uint32_t max_eqs, 
     n = 2 * max_eqs;
   }
 
-  for (i=0; i<n; i += 2) {
-    t1 = v->data[i];
-    t2 = v->data[i+1];
-    assert(egraph_class(egraph, t1) != egraph_class(egraph, t2));
-    x1 = egraph_base_thvar(egraph, t1);
-    x2 = egraph_base_thvar(egraph, t2);
-    assert(x1 != null_thvar && x2 != null_thvar);
+  {
+    uint32_t generated;
 
-    switch (egraph_type(egraph, t1)) {
-    case ETYPE_INT:
-    case ETYPE_REAL:
-      satellite = egraph->th[ETYPE_REAL];
-      interface = egraph->eg[ETYPE_REAL];
-      break;
+    generated = 0;
+    for (i=0; i<n; i += 2) {
+      t1 = v->data[i];
+      t2 = v->data[i+1];
+      assert(egraph_class(egraph, t1) != egraph_class(egraph, t2));
+      x1 = egraph_base_thvar(egraph, t1);
+      x2 = egraph_base_thvar(egraph, t2);
+      assert(x1 != null_thvar && x2 != null_thvar);
 
-    case ETYPE_BV:
-      satellite = egraph->th[ETYPE_BV];
-      interface = egraph->eg[ETYPE_BV];
-      break;
+      switch (egraph_type(egraph, t1)) {
+      case ETYPE_INT:
+      case ETYPE_REAL:
+        satellite = egraph->th[ETYPE_REAL];
+        interface = egraph->eg[ETYPE_REAL];
+        break;
 
-    default:
-      assert(false);
-      abort();
-      break;
+      case ETYPE_BV:
+        satellite = egraph->th[ETYPE_BV];
+        interface = egraph->eg[ETYPE_BV];
+        break;
+
+      default:
+        assert(false);
+        abort();
+        break;
+      }
+
+      assert(interface->equal_in_model(satellite, x1, x2));
+      eq = egraph_make_simple_eq(egraph, t1, t2);
+      if (interface->gen_interface_lemma(satellite, not(eq), x1, x2, true)) {
+        generated ++;
+      }
     }
 
-    assert(interface->equal_in_model(satellite, x1, x2));
-    eq = egraph_make_simple_eq(egraph, t1, t2);
-    interface->gen_interface_lemma(satellite, not(eq), x1, x2, true);
+    return generated;
   }
-
-  assert(n/2 <= max_eqs);
-
-  return n/2;
 }
 
 /*
@@ -6485,6 +6631,18 @@ static fcheck_code_t experimental_final_check(egraph_t *egraph) {
     egraph->stats.interface_eqs += i;
     ivector_reset(&egraph->interface_eqs);
     c = FCHECK_CONTINUE;
+
+    if (i == 0) {
+      /*
+       * Optimistic reconciliation can rediscover an already-learned
+       * interface split. If no fresh interface lemma is produced, then
+       * continuing would just spin in final check. Drop back to the
+       * baseline path, which will either find some other work or accept
+       * the current arrangement.
+       */
+      egraph_release_models(egraph);
+      return baseline_final_check(egraph);
+    }
 
     if (i == 1) {
       trace_printf(egraph_trace(egraph), 3, "(final check: 1 interface lemma)\n");
@@ -7447,7 +7605,7 @@ static bool egraph_literal_truth_in_context(egraph_t *egraph, literal_t l, bool 
 
   case HUB_ATM_TAG:
     binding = (hub_atom_t *) untag_atom(atom);
-    if (binding->reified_eterm == null_eterm) {
+    if (egraph_hub_atom_term(egraph, binding) == null_eterm) {
       return false;
     }
     t = mk_occ(binding->reified_eterm, sign_of_lit(l));
@@ -7474,11 +7632,13 @@ static bool egraph_simplify_clause_in_context(egraph_t *egraph, uint32_t n,
   uint32_t i, j, m;
   literal_t l, l_aux;
   bool is_true;
+  bool simplify_in_context;
 
   ivector_reset(buffer);
+  simplify_in_context = egraph->decision_level == egraph->base_level;
   for (i=0; i<n; i++) {
     l = a[i];
-    if (egraph_literal_truth_in_context(egraph, l, &is_true)) {
+    if (simplify_in_context && egraph_literal_truth_in_context(egraph, l, &is_true)) {
       if (is_true) {
         ivector_reset(buffer);
         return false;
@@ -7589,7 +7749,7 @@ static bool egraph_dispatch_attached_literal(egraph_t *egraph, literal_t l, void
 
   case HUB_ATM_TAG:
     binding = (hub_atom_t *) untag_atom(atom);
-    if (binding->reified_eterm == null_eterm) {
+    if (egraph_hub_atom_term(egraph, binding) == null_eterm) {
       (void) egraph_bvar2term(egraph, var_of(l));
     }
     if (binding->reified_eterm != null_eterm) {
@@ -7692,13 +7852,17 @@ static bool egraph_flush_backend_outbox(egraph_t *egraph) {
 
     case EGRAPH_FACT_PROPAGATED_LITERAL:
       assert(n == 1);
-      sat->propagate_literal(backend, a->var[0], eassertion_get_payload(a));
+      if (egraph_literal_value(egraph, a->var[0]) != VAL_TRUE) {
+        sat->propagate_literal(backend, a->var[0], eassertion_get_payload(a));
+      }
       break;
 
     case EGRAPH_FACT_IMPLIED_LITERAL:
       assert(n == 1);
-      ant = (antecedent_t) (uintptr_t) eassertion_get_payload(a);
-      sat->implied_literal(backend, a->var[0], ant);
+      if (egraph_literal_value(egraph, a->var[0]) != VAL_TRUE) {
+        ant = (antecedent_t) (uintptr_t) eassertion_get_payload(a);
+        sat->implied_literal(backend, a->var[0], ant);
+      }
       break;
 
     case EGRAPH_FACT_CONFLICT:
@@ -7750,7 +7914,6 @@ void egraph_attach_sat_atom_to_bvar(egraph_t *egraph, etype_t owner, bvar_t v, v
 
   binding = create_hub_atom_binding(egraph, owner, atom);
   egraph_sat_api(egraph)->attach_atom(egraph_backend(egraph), v, tagged_hub_atom(binding));
-  (void) egraph_bvar2term(egraph, v);
 }
 
 void egraph_remove_bvar_atom(egraph_t *egraph, bvar_t v) {
@@ -8022,11 +8185,20 @@ static bool egraph_kernel_quiesce(egraph_t *egraph, uint64_t max_conflicts) {
 static bool kernel_run_final_check(egraph_t *egraph, uint64_t max_conflicts) {
   th_sat_interface_t *sat;
   void *backend;
+  fcheck_code_t code;
+  bool had_events;
 
   sat = egraph_sat_api(egraph);
   backend = egraph_backend(egraph);
 
-  switch (egraph_final_check(egraph)) {
+  code = egraph_final_check(egraph);
+  had_events = eassertion_queue_is_nonempty(&egraph->backend_outbox);
+  if (had_events) {
+    (void) egraph_flush_backend_outbox(egraph);
+    return egraph_kernel_quiesce(egraph, max_conflicts);
+  }
+
+  switch (code) {
   case FCHECK_CONTINUE:
     return egraph_kernel_quiesce(egraph, max_conflicts);
   case FCHECK_SAT:

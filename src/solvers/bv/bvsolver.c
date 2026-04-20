@@ -8090,7 +8090,7 @@ static void bv_solver_release_model(bv_solver_t *solver) {
  * - i.e., the clause (not l) or (not (bveq x1 x2))
  * - if equiv is true: can add the reverse implication too?
  */
-static void bv_solver_gen_interface_lemma(bv_solver_t *solver, literal_t l, thvar_t x1, thvar_t x2, bool equiv) {
+static bool bv_solver_gen_interface_lemma(bv_solver_t *solver, literal_t l, thvar_t x1, thvar_t x2, bool equiv) {
   literal_t eq;
 
   assert(solver->egraph != NULL && x1 != x2 &&
@@ -8129,6 +8129,8 @@ static void bv_solver_gen_interface_lemma(bv_solver_t *solver, literal_t l, thva
   print_literal(stdout, not(eq));
   printf(")\n\n");
 #endif
+
+  return true;
 }
 
 
@@ -8839,6 +8841,61 @@ th_smt_interface_t *bv_solver_smt_interface(bv_solver_t *solver) {
  *  SATELLITE SOLVER INTERFACE (FOR EGRAPH)  *
  ********************************************/
 
+enum {
+  BV_UGE_ATOM_PRED_ID = -1101,
+  BV_SGE_ATOM_PRED_ID = -1102,
+};
+
+static type_t bv_solver_var_type(bv_solver_t *solver, thvar_t x) {
+  return bv_type(solver->egraph->types, bvvar_bitsize(&solver->vtbl, x));
+}
+
+static eterm_t bv_solver_make_rel_atom_term(bv_solver_t *solver, int32_t pred_id,
+                                            eterm_t left, eterm_t right, type_t tau) {
+  type_t dom[2];
+  eterm_t pred;
+  occ_t args[2];
+
+  dom[0] = tau;
+  dom[1] = tau;
+  pred = egraph_make_constant(solver->egraph,
+                              function_type(solver->egraph->types, bool_type(solver->egraph->types), 2, dom),
+                              pred_id);
+  args[0] = pos_occ(left);
+  args[1] = pos_occ(right);
+
+  return egraph_make_boolean_apply_term(solver->egraph, pos_occ(pred), 2, args);
+}
+
+static eterm_t bv_solver_hub_atom_term(bv_solver_t *solver, void *payload) {
+  bvatm_t *atom;
+  thvar_t x, y;
+  eterm_t xt, yt;
+  type_t tau;
+
+  if (payload == NULL) {
+    return null_eterm;
+  }
+
+  atom = bvatom_desc(&solver->atbl, bvatom_tagged_ptr2idx(payload));
+  x = mtbl_get_root(&solver->mtbl, atom->left);
+  y = mtbl_get_root(&solver->mtbl, atom->right);
+  xt = bv_solver_eterm_of_var(solver, x);
+  yt = bv_solver_eterm_of_var(solver, y);
+  if (xt == null_eterm || yt == null_eterm) {
+    return null_eterm;
+  }
+  tau = bv_solver_var_type(solver, x);
+
+  if (bvatm_is_eq(atom)) {
+    return egraph_make_boolean_eq_term(solver->egraph, pos_occ(xt), pos_occ(yt));
+  }
+
+  return bv_solver_make_rel_atom_term(solver,
+                                      bvatm_is_ge(atom) ? BV_UGE_ATOM_PRED_ID : BV_SGE_ATOM_PRED_ID,
+                                      xt, yt, tau);
+}
+
 static void bv_solver_ingest_hub_fact(bv_solver_t *solver, egraph_fact_kind_t kind, uint32_t n,
                                       const int32_t *a, int32_t id, composite_t *hint, void *payload) {
   thvar_t x, y;
@@ -8903,6 +8960,7 @@ static fcheck_code_t bv_solver_run_hub_final_check(bv_solver_t *solver) {
 }
 
 static th_hub_interface_t bv_solver_hub = {
+  (hub_atom_term_fun_t) bv_solver_hub_atom_term,
   (hub_ingest_fact_fun_t) bv_solver_ingest_hub_fact,
   (hub_has_pending_work_fun_t) bv_solver_has_pending_hub_work,
   (hub_run_propagation_fun_t) bv_solver_run_hub_propagation,

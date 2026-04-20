@@ -130,6 +130,8 @@ static value_t term_to_tuple(term_converter_t *convert, composite_term_t *tuple)
  */
 static value_t term_to_val(term_converter_t *convert, term_t t) {
   term_table_t *terms;
+  type_t tau;
+  int32_t id;
   value_t v;
 
   terms = convert->terms;
@@ -147,7 +149,27 @@ static value_t term_to_val(term_converter_t *convert, term_t t) {
     } else if (t == false_term) {
       v = vtbl_mk_false(convert->vtbl);
     } else {
-      v = vtbl_mk_const(convert->vtbl, term_type(terms, t), constant_term_index(terms, t), term_name(terms, t));
+      tau = term_type(terms, t);
+      id = constant_term_index(terms, t);
+      if (id >= 0) {
+        switch (type_kind(convert->vtbl->type_table, tau)) {
+        case SCALAR_TYPE:
+        case UNINTERPRETED_TYPE:
+        case INSTANCE_TYPE:
+          v = vtbl_mk_const(convert->vtbl, tau, id, term_name(terms, t));
+          break;
+        default:
+          v = vtbl_make_object(convert->vtbl, tau);
+          break;
+        }
+      } else {
+        /*
+         * Internal solver symbols may use negative ids. These can also have
+         * higher-order types, so they can't be represented as uninterpreted
+         * constants in the concrete value table.
+         */
+        v = vtbl_make_object(convert->vtbl, tau);
+      }
     }
     break;
 

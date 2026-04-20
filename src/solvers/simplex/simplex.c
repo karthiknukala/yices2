@@ -9430,6 +9430,11 @@ static uint32_t simplex_trichotomy_lemma(simplex_solver_t *solver, thvar_t x1, t
   assert(t1 != null_eterm && t2 != null_eterm);
   l = egraph_make_simple_eq(solver->egraph, pos_occ(t1), pos_occ(t2));
 
+  if (solver->stats.num_tricho_lemmas + solver->stats.num_reduced_tricho < 10) {
+    printf("[tricho-start] x=%"PRId32" y=%"PRId32" eq=%"PRId32"\n", x1, x2, l);
+    fflush(stdout);
+  }
+
 #if TRACE
   printf("     trichotomy lemma: egraph atom: ");
   print_literal(stdout, l);
@@ -9455,6 +9460,10 @@ static uint32_t simplex_trichotomy_lemma(simplex_solver_t *solver, thvar_t x1, t
     printf("\n");
 #endif
     egraph_add_unit_clause(solver->egraph, not(l));
+    if (solver->stats.num_tricho_lemmas + solver->stats.num_reduced_tricho < 10) {
+      printf("[tricho-axiom] eq=%"PRId32" unit=%"PRId32"\n", l, not(l));
+      fflush(stdout);
+    }
     reset_poly_buffer(&solver->buffer);
 
 #if 0
@@ -9477,6 +9486,12 @@ static uint32_t simplex_trichotomy_lemma(simplex_solver_t *solver, thvar_t x1, t
 
     l1 = create_pos_atom(solver, y, c);   // l1 := y > c
     l2 = create_neg_atom(solver, y, c);   // l2 := y < c
+
+    if (solver->stats.num_tricho_lemmas < 10) {
+      printf("[tricho] x=%"PRId32" y=%"PRId32" eq=%"PRId32" gt=%"PRId32" lt=%"PRId32"\n",
+             x1, x2, l, l1, l2);
+      fflush(stdout);
+    }
 
 #if TRACE
     printf("     reduced to: ");
@@ -10699,33 +10714,105 @@ void simplex_reset(simplex_solver_t *solver) {
  * we just add the corresponding assertion code to the assertion queue.
  */
 bool simplex_assert_atom(simplex_solver_t *solver, void *a, literal_t l) {
+  arith_atom_t *atom;
+  arith_vartable_t *vtbl;
+  arith_astack_t *queue;
+  uint32_t sign, i;
   int32_t id;
+  thvar_t x;
+  int32_t k;
+  bool supported;
 
   id = arithatom_tagged_ptr2idx(a);
-  assert(boolvar_of_atom(arith_atom(&solver->atbl, id)) == var_of(l));
+  atom = arith_atom(&solver->atbl, id);
+  assert(boolvar_of_atom(atom) == var_of(l));
+
+  sign = sign_of(l);
 
   if (arith_atom_is_unmarked(&solver->atbl, id)) {
-    push_assertion(&solver->assertion_queue, mk_assertion(id, sign_of(l)));
+    push_assertion(&solver->assertion_queue, mk_assertion(id, sign));
     mark_arith_atom(&solver->atbl, id);
+  } else {
+    /*
+     * A backjump can remove the stronger active bound that used to make this
+     * atom redundant while the SAT assignment survives on the trail. If so,
+     * revisit the existing assertion instead of skipping the replayed literal.
+     */
+    supported = false;
+    vtbl = &solver->vtbl;
+    x = var_of_atom(atom);
+
+    switch (tag_of_atom(atom)) {
+    case GE_ATM:
+      if (sign == 0) {
+        k = arith_var_lower_index(vtbl, x);
+        supported = k >= 0 && xq_ge_q(solver->bstack.bound + k, bound_of_atom(atom));
+      } else {
+        k = arith_var_upper_index(vtbl, x);
+        supported = k >= 0 && xq_lt_q(solver->bstack.bound + k, bound_of_atom(atom));
+      }
+      break;
+
+    case LE_ATM:
+      if (sign == 0) {
+        k = arith_var_upper_index(vtbl, x);
+        supported = k >= 0 && xq_le_q(solver->bstack.bound + k, bound_of_atom(atom));
+      } else {
+        k = arith_var_lower_index(vtbl, x);
+        supported = k >= 0 && xq_gt_q(solver->bstack.bound + k, bound_of_atom(atom));
+      }
+      break;
+
+    case EQ_ATM:
+      if (sign == 0) {
+        k = arith_var_lower_index(vtbl, x);
+        if (k >= 0 && xq_eq_q(solver->bstack.bound + k, bound_of_atom(atom))) {
+          int32_t j;
+          j = arith_var_upper_index(vtbl, x);
+          supported = j >= 0 && xq_eq_q(solver->bstack.bound + j, bound_of_atom(atom));
+        }
+      } else {
+        k = arith_var_lower_index(vtbl, x);
+        supported = k >= 0 && xq_gt_q(solver->bstack.bound + k, bound_of_atom(atom));
+        if (! supported) {
+          k = arith_var_upper_index(vtbl, x);
+          supported = k >= 0 && xq_lt_q(solver->bstack.bound + k, bound_of_atom(atom));
+        }
+      }
+      break;
+
+    default:
+      assert(false);
+      break;
+    }
+
+    if (! supported) {
+      queue = &solver->assertion_queue;
+      for (i=queue->top; i > 0; ) {
+        i --;
+        if (queue->data[i] == mk_assertion(id, sign)) {
+          if (i < queue->prop_ptr) {
+            queue->prop_ptr = i;
+          }
+          supported = true;
+          break;
+        }
+      }
+      assert(supported);
+    }
+  }
 
 #if TRACE
-    printf("---> added atom[%"PRId32"]: ", id);
+  if (arith_atom_is_marked(&solver->atbl, id) && solver->assertion_queue.top > 0) {
+    printf("---> %s atom[%"PRId32"]: ", arith_atom_is_unmarked(&solver->atbl, id) ? "added" : "seen", id);
     print_simplex_atom(stdout, solver, id);
     if (is_pos(l)) {
       printf("  (p!%"PRId32" is true)\n", var_of(l));
     } else {
       printf("  (p!%"PRId32" is false)\n", var_of(l));
     }
-  } else {
-    printf("---> skipped atom[%"PRId32"]: ", id);
-    print_simplex_atom(stdout, solver, id);
-    if (is_pos(l)) {
-      printf("  (true)\n");
-    } else {
-      printf("  (false)\n");
-    }
-#endif
   }
+#endif
 
   return true;
 }
@@ -11892,12 +11979,33 @@ static void simplex_release_model(simplex_solver_t *solver) {
  * Add the lemma l => x1 != x2
  * - if equiv is true, also generate the reverse implication
  */
-static void simplex_gen_interface_lemma(simplex_solver_t *solver, literal_t l, thvar_t x1, thvar_t x2, bool equiv) {
+static bool simplex_gen_interface_lemma(simplex_solver_t *solver, literal_t l, thvar_t x1, thvar_t x2, bool equiv) {
+  cache_t *cache;
+  cache_elem_t *e;
   rational_t *c;
   thvar_t y;
   literal_t l0, l1, l2;
 
   assert(x1 != x2);
+
+  /*
+   * Experimental reconciliation can rediscover the same disequality split
+   * across repeated final-check attempts. Cache the lemma instance just like
+   * the baseline trichotomy path, otherwise the solver can keep re-adding the
+   * same interface clause family without making progress.
+   */
+  if (x2 < x1) {
+    y = x1;
+    x1 = x2;
+    x2 = y;
+  }
+
+  cache = simplex_get_cache(solver);
+  e = cache_get(cache, TRICHOTOMY_LEMMA, x1, x2);
+  if (e->flag != NEW_CACHE_ELEM) {
+    return false;
+  }
+  e->flag = ACTIVE_ARITH_LEMMA;
 
   /*
    * build p such that p=0 is equivalent to (x1 = x2)
@@ -12024,7 +12132,7 @@ static void simplex_gen_interface_lemma(simplex_solver_t *solver, literal_t l, t
 #endif
 
   }
-
+  return true;
 }
 
 
@@ -12449,15 +12557,22 @@ static bool equations_hold_in_model(simplex_solver_t *solver) {
  */
 static bool assertions_hold_in_model(simplex_solver_t *solver) {
   arith_atomtable_t *atbl;
+  arith_astack_t *astack;
   arith_atom_t *atom;
   thvar_t x;
   bvar_t v;
+  int32_t lb, ub, qidx;
   bool truth;
   uint32_t i, n;
 
   atbl = &solver->atbl;
+  astack = &solver->assertion_queue;
   n = atbl->natoms;
   for (i=0; i<n; i++) {
+    if (arith_atom_is_unmarked(atbl, i)) {
+      continue;
+    }
+
     atom = arith_atom(atbl, i);
     v = boolvar_of_atom(atom);
     x = var_of_atom(atom);
@@ -12466,6 +12581,14 @@ static bool assertions_hold_in_model(simplex_solver_t *solver) {
     switch (egraph_bvar_value(solver->egraph, v)) {
     case VAL_FALSE:
       if (truth) {
+        qidx = -1;
+        for (lb=astack->top; lb > 0; ) {
+          lb --;
+          if (atom_of_assertion(astack->data[lb]) == i) {
+            qidx = lb;
+            break;
+          }
+        }
         printf("---> BUG: invalid Simplex model\n");
         print_simplex_atomdef(stdout, solver, v);
         printf("  value[");
@@ -12476,6 +12599,32 @@ static bool assertions_hold_in_model(simplex_solver_t *solver) {
         printf("] = ");
         q_print(stdout, solver->value + x);
         printf("\n");
+        lb = arith_var_lower_index(&solver->vtbl, x);
+        ub = arith_var_upper_index(&solver->vtbl, x);
+        printf("  current xq value[");
+        print_simplex_var(stdout, solver, x);
+        printf("] = ");
+        xq_print(stdout, arith_var_value(&solver->vtbl, x));
+        printf("\n");
+        printf("  atom marked = %s, assertion index = %"PRId32" (prop_ptr=%"PRIu32", top=%"PRIu32")\n",
+               arith_atom_is_marked(atbl, i) ? "true" : "false",
+               qidx, astack->prop_ptr, astack->top);
+        if (qidx >= 0) {
+          printf("  queued assertion sign = %"PRIu32"\n", sign_of_assertion(astack->data[qidx]));
+        }
+        lb = arith_var_lower_index(&solver->vtbl, x);
+        ub = arith_var_upper_index(&solver->vtbl, x);
+        printf("  lower-index = %"PRId32", upper-index = %"PRId32"\n", lb, ub);
+        if (lb >= 0) {
+          printf("  lower bound = ");
+          xq_print(stdout, solver->bstack.bound + lb);
+          printf("\n");
+        }
+        if (ub >= 0) {
+          printf("  upper bound = ");
+          xq_print(stdout, solver->bstack.bound + ub);
+          printf("\n");
+        }
         fflush(stdout);
 
         return false;
@@ -12487,6 +12636,14 @@ static bool assertions_hold_in_model(simplex_solver_t *solver) {
       break;
     case VAL_TRUE:
       if (! truth) {
+        qidx = -1;
+        for (lb=astack->top; lb > 0; ) {
+          lb --;
+          if (atom_of_assertion(astack->data[lb]) == i) {
+            qidx = lb;
+            break;
+          }
+        }
         printf("---> BUG: invalid Simplex model\n");
         print_simplex_atomdef(stdout, solver, v);
         printf("  value[");
@@ -12497,6 +12654,32 @@ static bool assertions_hold_in_model(simplex_solver_t *solver) {
         printf("] = ");
         q_print(stdout, solver->value + x);
         printf("\n");
+        lb = arith_var_lower_index(&solver->vtbl, x);
+        ub = arith_var_upper_index(&solver->vtbl, x);
+        printf("  current xq value[");
+        print_simplex_var(stdout, solver, x);
+        printf("] = ");
+        xq_print(stdout, arith_var_value(&solver->vtbl, x));
+        printf("\n");
+        printf("  atom marked = %s, assertion index = %"PRId32" (prop_ptr=%"PRIu32", top=%"PRIu32")\n",
+               arith_atom_is_marked(atbl, i) ? "true" : "false",
+               qidx, astack->prop_ptr, astack->top);
+        if (qidx >= 0) {
+          printf("  queued assertion sign = %"PRIu32"\n", sign_of_assertion(astack->data[qidx]));
+        }
+        lb = arith_var_lower_index(&solver->vtbl, x);
+        ub = arith_var_upper_index(&solver->vtbl, x);
+        printf("  lower-index = %"PRId32", upper-index = %"PRId32"\n", lb, ub);
+        if (lb >= 0) {
+          printf("  lower bound = ");
+          xq_print(stdout, solver->bstack.bound + lb);
+          printf("\n");
+        }
+        if (ub >= 0) {
+          printf("  upper bound = ");
+          xq_print(stdout, solver->bstack.bound + ub);
+          printf("\n");
+        }
         fflush(stdout);
       }
       break;
@@ -12550,10 +12733,10 @@ static bool model_is_consistent_with_egraph(simplex_solver_t *solver) {
     n = vtbl->nvars;
     for (i=0; i<n; i++) {
       t = arith_var_get_eterm(vtbl, i);
-      if (t != null_eterm) {
+      if (t != null_eterm && is_root_var(solver, i)) {
         for (j=i+1; j<n; j++) {
           u = arith_var_get_eterm(vtbl, j);
-          if (u != null_eterm && !egraph_equal_terms(egraph, t, u)) {
+          if (u != null_eterm && is_root_var(solver, j) && !egraph_equal_terms(egraph, t, u)) {
             // t != u in the egraph so we want value[i] != value[j]
             if (q_eq(solver->value + i, solver->value + j)) {
               printf("---> BUG: invalid Simplex model\n");
@@ -12620,6 +12803,19 @@ void simplex_build_model(simplex_solver_t *solver) {
   check_assignment(solver);
 #endif
 
+#ifndef NDEBUG
+  /*
+   * In debug builds, make the final xrational assignment egraph-aware
+   * before concretization so the model-validation checks below see the
+   * same separation properties as reconciliation.
+   */
+  if (solver->egraph != NULL && arith_vartable_has_eterms(&solver->vtbl)) {
+    simplex_prepare_model(solver);
+    simplex_adjust_model(solver);
+    simplex_prepare_model(solver);
+  }
+#endif
+
   n = solver->vtbl.nvars;
   solver->value = new_rational_array(n);
 
@@ -12640,9 +12836,15 @@ void simplex_build_model(simplex_solver_t *solver) {
     epsilon_for_egraph(solver);
   }
   for (i=1; i<n; i++) {
-    if (! tst_bit(mark, i)) {
-      simplex_adjust_epsilon(solver, i);
-    }
+    /*
+     * Epsilon must preserve every active arithmetic atom, not just the
+     * bounds on "unmarked" variables. Derived/trivial variables can carry
+     * asserted bounds too, especially after reconciliation introduces
+     * auxiliary atoms. Restricting this pass to unmarked variables can
+     * produce a concrete rational model that violates those atoms even
+     * though the extended-rational assignment is feasible.
+     */
+    simplex_adjust_epsilon(solver, i);
   }
 
   /*
@@ -12798,6 +13000,66 @@ th_smt_interface_t *simplex_smt_interface(simplex_solver_t *solver) {
  *  SATELLITE SOLVER INTERFACE (FOR EGRAPH)  *
  ********************************************/
 
+enum {
+  SIMPLEX_EQ_ATOM_PRED_ID = -1001,
+  SIMPLEX_GE_ATOM_PRED_ID = -1002,
+  SIMPLEX_LE_ATOM_PRED_ID = -1003,
+};
+
+static type_t simplex_term_type(simplex_solver_t *solver, thvar_t x) {
+  return arith_var_is_int(&solver->vtbl, x) ? int_type(solver->egraph->types) : real_type(solver->egraph->types);
+}
+
+static eterm_t simplex_make_rel_atom_term(simplex_solver_t *solver, int32_t pred_id,
+                                          eterm_t left, type_t left_tau,
+                                          eterm_t right, type_t right_tau) {
+  type_t dom[2];
+  eterm_t pred;
+  occ_t args[2];
+
+  dom[0] = left_tau;
+  dom[1] = right_tau;
+  pred = egraph_make_constant(solver->egraph,
+                              function_type(solver->egraph->types, bool_type(solver->egraph->types), 2, dom),
+                              pred_id);
+  args[0] = pos_occ(left);
+  args[1] = pos_occ(right);
+
+  return egraph_make_boolean_apply_term(solver->egraph, pos_occ(pred), 2, args);
+}
+
+static eterm_t simplex_hub_atom_term(simplex_solver_t *solver, void *payload) {
+  arith_atom_t *atom;
+  thvar_t x, y;
+  eterm_t xt, yt;
+  type_t x_tau, y_tau;
+  int32_t pred_id;
+
+  if (payload == NULL) {
+    return null_eterm;
+  }
+
+  atom = arith_atom(&solver->atbl, arithatom_tagged_ptr2idx(payload));
+  x = var_of_atom(atom);
+  y = simplex_create_const(solver, bound_of_atom(atom));
+  xt = simplex_eterm_of_var(solver, x);
+  yt = simplex_eterm_of_var(solver, y);
+  if (xt == null_eterm || yt == null_eterm) {
+    return null_eterm;
+  }
+  x_tau = simplex_term_type(solver, x);
+  y_tau = simplex_term_type(solver, y);
+
+  if (atom_is_eq(atom) && x_tau == y_tau) {
+    return egraph_make_boolean_eq_term(solver->egraph, pos_occ(xt), pos_occ(yt));
+  }
+
+  pred_id = atom_is_ge(atom) ? SIMPLEX_GE_ATOM_PRED_ID :
+    atom_is_le(atom) ? SIMPLEX_LE_ATOM_PRED_ID : SIMPLEX_EQ_ATOM_PRED_ID;
+
+  return simplex_make_rel_atom_term(solver, pred_id, xt, x_tau, yt, y_tau);
+}
+
 static void simplex_ingest_hub_fact(simplex_solver_t *solver, egraph_fact_kind_t kind, uint32_t n,
                                     const int32_t *a, int32_t id, composite_t *hint, void *payload) {
   switch (kind) {
@@ -12810,16 +13072,16 @@ static void simplex_ingest_hub_fact(simplex_solver_t *solver, egraph_fact_kind_t
 
   case EGRAPH_FACT_VAR_EQ:
     assert(n == 2);
-    simplex_assert_var_eq(solver, a[0], a[1], id);
+    eassertion_push_eq(&solver->egraph_queue, a[0], a[1], id);
     break;
 
   case EGRAPH_FACT_VAR_DISEQ:
     assert(n == 2);
-    simplex_assert_var_diseq(solver, a[0], a[1], hint);
+    eassertion_push_diseq(&solver->egraph_queue, a[0], a[1], hint);
     break;
 
   case EGRAPH_FACT_VAR_DISTINCT:
-    simplex_assert_var_distinct(solver, n, (thvar_t *) a, hint);
+    eassertion_push_distinct(&solver->egraph_queue, n, (thvar_t *) a, hint);
     break;
 
   default:
@@ -12831,7 +13093,12 @@ static void simplex_ingest_hub_fact(simplex_solver_t *solver, egraph_fact_kind_t
 static bool simplex_has_pending_hub_work(simplex_solver_t *solver) {
   if (! solver->tableau_ready) {
     return solver->unsat_before_search ||
+      eassertion_queue_is_nonempty(&solver->egraph_queue) ||
       solver->assertion_queue.prop_ptr < solver->assertion_queue.top;
+  }
+
+  if (eassertion_queue_is_nonempty(&solver->egraph_queue)) {
+    return true;
   }
 
   return solver->assertion_queue.prop_ptr < solver->assertion_queue.top ||
@@ -12848,6 +13115,7 @@ static fcheck_code_t simplex_run_hub_final_check(simplex_solver_t *solver) {
 }
 
 static th_hub_interface_t simplex_hub = {
+  (hub_atom_term_fun_t) simplex_hub_atom_term,
   (hub_ingest_fact_fun_t) simplex_ingest_hub_fact,
   (hub_has_pending_work_fun_t) simplex_has_pending_hub_work,
   (hub_run_propagation_fun_t) simplex_run_hub_propagation,

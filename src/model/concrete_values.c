@@ -2149,10 +2149,22 @@ value_t vtbl_mk_const(value_table_t *table, type_t tau, int32_t id, char *name) 
   value_unint_t *d;
   value_t v;
   const_hobj_t const_hobj;
+  type_kind_t kind;
 
-  assert(type_kind(table->type_table, tau) == SCALAR_TYPE ||
-         type_kind(table->type_table, tau) == UNINTERPRETED_TYPE ||
-	 type_kind(table->type_table, tau) == INSTANCE_TYPE);
+  kind = type_kind(table->type_table, tau);
+  if (kind != SCALAR_TYPE && kind != UNINTERPRETED_TYPE && kind != INSTANCE_TYPE) {
+    /*
+     * Internal solver symbols can use negative ids for helper constants of
+     * higher-order types. These are not first-class uninterpreted constants in
+     * the concrete-value table, so give them a generic object of the right
+     * type instead of crashing in model construction.
+     */
+    if (id < 0) {
+      return vtbl_make_object(table, tau);
+    }
+  }
+
+  assert(kind == SCALAR_TYPE || kind == UNINTERPRETED_TYPE || kind == INSTANCE_TYPE);
   assert(0 <= id);
 
   const_hobj.m.hash = (hobj_hash_t) hash_const_value;

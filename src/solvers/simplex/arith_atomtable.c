@@ -114,6 +114,7 @@ static void extend_arith_atomtable(arith_atomtable_t *table) {
 static int32_t new_arith_atom(arith_atomtable_t *table, uint32_t header, rational_t *bound) {
   int32_t i;
   bvar_t x;
+  arith_atom_t *atom;
 
   i = table->natoms;
   if (i == table->size) {
@@ -121,15 +122,17 @@ static int32_t new_arith_atom(arith_atomtable_t *table, uint32_t header, rationa
   }
   assert(i < table->size);
 
+  // initialize the atom descriptor
+  atom = table->atoms + i;
+  atom->header = header;
+  atom->boolvar = null_bvar;
+  q_init(&atom->bound);
+  q_set(&atom->bound, bound);
+
   // new boolean variable
   x = egraph_new_boolean_variable(table->egraph);
+  atom->boolvar = x;
   egraph_attach_sat_atom_to_bvar(table->egraph, ETYPE_INT, x, arithatom_idx2tagged_ptr(i));
-
-  // initialize the atom descriptor
-  table->atoms[i].header = header;
-  table->atoms[i].boolvar = x;
-  q_init(&table->atoms[i].bound);
-  q_set(&table->atoms[i].bound, bound);
 
   // new atom is not assigned
   clr_bit(table->mark, i);

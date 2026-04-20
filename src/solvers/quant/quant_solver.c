@@ -1439,6 +1439,26 @@ static th_ctrl_interface_t fsolver_control = {
   (clear_fun_t) quant_solver_clear,
 };
 
+static bool quant_solver_has_pending_hub_work(quant_solver_t *solver) {
+  return solver->base_literals.size > 0;
+}
+
+static bool quant_solver_run_hub_propagation(quant_solver_t *solver) {
+  return quant_solver_propagate(solver);
+}
+
+static fcheck_code_t quant_solver_run_hub_final_check(quant_solver_t *solver) {
+  return quant_solver_final_check(solver);
+}
+
+static th_hub_interface_t qsolver_hub = {
+  NULL,
+  NULL,
+  (hub_has_pending_work_fun_t) quant_solver_has_pending_hub_work,
+  (hub_run_propagation_fun_t) quant_solver_run_hub_propagation,
+  (hub_run_final_check_fun_t) quant_solver_run_hub_final_check,
+};
+
 static th_egraph_interface_t fsolver_egraph = {
   NULL, // (assert_eq_fun_t) quant_solver_assert_var_eq,
   NULL, // (assert_diseq_fun_t) quant_solver_assert_var_diseq,
@@ -1456,6 +1476,7 @@ static th_egraph_interface_t fsolver_egraph = {
   NULL, // (attach_to_var_fun_t) quant_solver_attach_eterm,
   NULL, // (get_eterm_fun_t) quant_solver_get_eterm_of_var,
   NULL, // (select_eq_polarity_fun_t) quant_solver_select_eq_polarity,
+  &qsolver_hub,
 };
 
 
