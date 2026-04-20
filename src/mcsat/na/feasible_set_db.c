@@ -674,7 +674,9 @@ variable_t feasible_set_db_get_fixed(feasible_set_db_t* db) {
 void feasible_set_db_approximate_value(feasible_set_db_t* db, variable_t x, lp_interval_t* result) {
   lp_feasibility_set_t* feasible = feasible_set_db_get(db, x);
   assert(variable_db_is_real(db->plugin->ctx->var_db, x) || variable_db_is_int(db->plugin->ctx->var_db, x));
-  if (feasible != NULL) {
+  if (feasible != NULL &&
+      !lp_feasibility_set_is_empty(feasible) &&
+      !lp_feasibility_set_is_full(feasible)) {
     lp_feasibility_set_to_interval(feasible, result);
   } else {
     lp_interval_t full;

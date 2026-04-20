@@ -1122,6 +1122,17 @@ void na_plugin_decide(plugin_t* plugin, variable_t x, trail_token_t* decide_toke
 
   // If the set is 0, we can pick any value, including 0
   if (!using_cached && feasible != NULL) {
+    if (lp_feasibility_set_is_empty(feasible)) {
+      na_plugin_report_conflict(na, decide_token, x);
+      lp_value_destruct(&x_new_lpvalue);
+      return;
+    }
+    if (variable_db_is_int(na->ctx->var_db, x) &&
+        !lp_feasibility_set_contains_int(feasible)) {
+      na_plugin_report_int_conflict(na, decide_token, x);
+      lp_value_destruct(&x_new_lpvalue);
+      return;
+    }
     // Otherwise pick from the set
     lp_feasibility_set_pick_value(feasible, &x_new_lpvalue);
   }

@@ -49,6 +49,7 @@
 #include "mcsat/bv/bv_plugin.h"
 #include "mcsat/ff/ff_plugin.h"
 #include "mcsat/na/na_plugin.h"
+#include "mcsat/na/na_plugin_internal.h"
 
 #include "mcsat/preprocessor.h"
 
@@ -56,15 +57,20 @@
 
 #include "utils/dprng.h"
 #include "utils/int_array_sort.h"
+#include "utils/ptr_vectors.h"
 #include "model/model_queries.h"
 #include "io/model_printer.h"
 
 #include "yices.h"
 #include "api/yices_api_lock_free.h"
+#include "terms/rationals.h"
+#include <poly/interval.h>
+#include <poly/feasibility_set.h>
 #include <inttypes.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 /**
@@ -118,7 +124,8 @@ typedef enum {
 #define MCSAT_PARALLEL_WORKER_STACK_SIZE (16u * 1024u * 1024u)
 #define MCSAT_PARALLEL_WARMUP_NS 20000000L
 #define MCSAT_PARALLEL_MIN_VARIABLES 256
-#define MCSAT_PARALLEL_EPOCH_CONFLICT_BUDGET 1u
+#define MCSAT_PARALLEL_EPOCH_CONFLICT_BUDGET 32u
+#define MCSAT_PARALLEL_TASK_MULTIPLIER 4u
 
 typedef struct {
   /** Main evaluation method */
@@ -128,26 +135,34 @@ typedef struct {
 } mcsat_evaluator_t;
 
 typedef struct {
+  term_t* assumptions;
+  uint32_t n_assumptions;
+  uint32_t split_depth;
+} mcsat_parallel_frontier_task_t;
+
+typedef struct {
   pthread_mutex_t result_lock;
+  pthread_cond_t task_cond;
   volatile bool running;
   volatile bool stop_requested;
   bool result_ready;
   smt_status_t result_status;
   mcsat_solver_t* winner;
   mcsat_solver_t** workers;
+  pvector_t task_queue;
   uint32_t worker_count;
+  uint32_t active_tasks;
+  uint32_t max_task_depth;
+  uint32_t max_pending_tasks;
   uint32_t completed_workers;
   uint32_t unsat_workers;
 } mcsat_parallel_state_t;
 
 typedef struct {
   mcsat_solver_t* worker;
+  mcsat_parallel_state_t* parallel;
   const param_t* params;
   model_t* mdl;
-  uint32_t n_assumptions;
-  const term_t* assumptions;
-  bool frontier_epoch_mode;
-  uint32_t frontier_epoch_conflict_budget;
 } mcsat_parallel_worker_task_t;
 
 struct mcsat_solver_s {
@@ -323,6 +338,10 @@ struct mcsat_solver_s {
   /** Model used for assumptions solving */
   model_t* assumptions_model;
 
+  /** Active assumptions for the current solve invocation */
+  const term_t* active_assumptions;
+  uint32_t active_assumptions_count;
+
   /** Interpolant */
   term_t interpolant;
 
@@ -414,13 +433,22 @@ static
 void mcsat_import_shared_lemmas(mcsat_solver_t* mcsat);
 
 static
+void mcsat_parallel_frontier_task_delete(mcsat_parallel_frontier_task_t* task);
+
+static
 bool mcsat_propagate(mcsat_solver_t* mcsat, bool run_learning);
 
 static
 void mcsat_parallel_prepare_term_state(mcsat_solver_t* mcsat);
 
 static
-uint32_t mcsat_parallel_collect_split_variables(mcsat_solver_t* mcsat, uint32_t max_split_vars, ivector_t* out);
+uint32_t mcsat_parallel_collect_split_literals(mcsat_solver_t* mcsat, uint32_t max_split_literals, ivector_t* out);
+
+static
+bool mcsat_apply_literal_assumptions(mcsat_solver_t* mcsat, uint32_t n_assumptions, const term_t assumptions[]);
+
+static
+bool mcsat_sat_respects_literal_assumptions(mcsat_solver_t* mcsat, uint32_t n_assumptions, const term_t assumptions[]);
 
 static inline
 void trail_token_construct(plugin_trail_token_t* token, mcsat_plugin_context_t* ctx, variable_t x);
@@ -430,6 +458,9 @@ void mcsat_parallel_invalidate(mcsat_solver_t* mcsat);
 
 static
 bool mcsat_should_stop(const mcsat_solver_t* mcsat);
+
+static
+bool mcsat_literal_is_arith_atom(const mcsat_solver_t* mcsat, term_t literal);
 
 static
 void mcsat_stats_init(mcsat_solver_t* mcsat) {
@@ -571,6 +602,32 @@ void mcsat_parallel_destroy_winner(mcsat_solver_t* mcsat) {
 }
 
 static
+void mcsat_parallel_frontier_task_delete(mcsat_parallel_frontier_task_t* task) {
+  if (task == NULL) {
+    return;
+  }
+  safe_free(task->assumptions);
+  safe_free(task);
+}
+
+static
+void mcsat_parallel_clear_task_queue_locked(mcsat_parallel_state_t* parallel) {
+  while (parallel->task_queue.size > 0) {
+    mcsat_parallel_frontier_task_delete((mcsat_parallel_frontier_task_t*) pvector_pop2(&parallel->task_queue));
+  }
+}
+
+static
+bool mcsat_parallel_has_pending_tasks_locked(const mcsat_parallel_state_t* parallel) {
+  return parallel->active_tasks > 0 || parallel->task_queue.size > 0;
+}
+
+static
+void mcsat_parallel_broadcast_locked(mcsat_parallel_state_t* parallel) {
+  pthread_cond_broadcast(&parallel->task_cond);
+}
+
+static
 void mcsat_parallel_request_stop_locked(mcsat_parallel_state_t* parallel) {
   uint32_t i;
 
@@ -582,6 +639,7 @@ void mcsat_parallel_request_stop_locked(mcsat_parallel_state_t* parallel) {
       }
     }
   }
+  mcsat_parallel_broadcast_locked(parallel);
   __sync_synchronize();
 }
 
@@ -643,25 +701,124 @@ void mcsat_normalize_clause_literals(ivector_t* literals) {
 }
 
 static
-void mcsat_notify_plugins_of_lemma(mcsat_solver_t* mcsat, ivector_t* lemma_literals) {
+bool mcsat_clause_is_tautology(const ivector_t* literals) {
+  uint32_t i;
+  uint32_t j;
+
+  for (i = 0; i < literals->size; ++i) {
+    for (j = i + 1; j < literals->size; ++j) {
+      if (literals->data[i] == opposite_term(literals->data[j])) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+static
+bool mcsat_active_assumptions_are_literals(const mcsat_solver_t* mcsat) {
   uint32_t i;
 
-  for (i = 0; i < mcsat->plugins_count; ++i) {
-    plugin_t* plugin = mcsat->plugins[i].plugin;
-    if (plugin->new_lemma_notify) {
-      plugin_trail_token_t prop_token;
-
-      trail_token_construct(&prop_token, mcsat->plugins[i].plugin_ctx, variable_null);
-      mcsat_term_lock(mcsat);
-      plugin->new_lemma_notify(plugin, lemma_literals, (trail_token_t*) &prop_token);
-      mcsat_term_unlock(mcsat);
+  for (i = 0; i < mcsat->active_assumptions_count; ++i) {
+    term_t literal = mcsat->active_assumptions[i];
+    term_t atom = unsigned_term(literal);
+    if (atom == NULL_TERM || term_type_kind(mcsat->terms, atom) != BOOL_TYPE) {
+      return false;
     }
+    if (mcsat_literal_is_arith_atom(mcsat, literal)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+static
+void mcsat_notify_plugin_of_lemma(mcsat_solver_t* mcsat, uint32_t plugin_i, ivector_t* lemma_literals) {
+  plugin_t* plugin;
+  plugin_trail_token_t prop_token;
+
+  if (plugin_i >= mcsat->plugins_count) {
+    return;
+  }
+
+  plugin = mcsat->plugins[plugin_i].plugin;
+  if (plugin->new_lemma_notify == NULL) {
+    return;
+  }
+
+  trail_token_construct(&prop_token, mcsat->plugins[plugin_i].plugin_ctx, variable_null);
+  mcsat_term_lock(mcsat);
+  plugin->new_lemma_notify(plugin, lemma_literals, (trail_token_t*) &prop_token);
+  mcsat_term_unlock(mcsat);
+}
+
+static
+bool mcsat_literal_is_arith_atom(const mcsat_solver_t* mcsat, term_t literal) {
+  switch (term_kind(mcsat->terms, unsigned_term(literal))) {
+  case ARITH_EQ_ATOM:
+  case ARITH_GE_ATOM:
+  case ARITH_BINEQ_ATOM:
+  case ARITH_ROOT_ATOM:
+    return true;
+  default:
+    return false;
+  }
+}
+
+static
+bool mcsat_clause_routes_to_na(const mcsat_solver_t* mcsat, const ivector_t* lemma_literals) {
+  if (mcsat->na_plugin_id >= mcsat->plugins_count || lemma_literals->size == 0) {
+    return false;
+  }
+
+  return lemma_literals->size == 1 &&
+         mcsat_literal_is_arith_atom(mcsat, lemma_literals->data[0]);
+}
+
+static
+bool mcsat_clause_routes_to_uf(const mcsat_solver_t* mcsat, const ivector_t* lemma_literals) {
+  term_t atom;
+  composite_term_t* eq_desc;
+  type_kind_t lhs_kind;
+
+  if (mcsat->uf_plugin_id >= mcsat->plugins_count || lemma_literals->size != 1) {
+    return false;
+  }
+
+  atom = unsigned_term(lemma_literals->data[0]);
+  if (term_kind(mcsat->terms, atom) != EQ_TERM) {
+    return false;
+  }
+
+  eq_desc = eq_term_desc(mcsat->terms, atom);
+  lhs_kind = term_type_kind(mcsat->terms, eq_desc->arg[0]);
+  return lhs_kind == UNINTERPRETED_TYPE ||
+         lhs_kind == FUNCTION_TYPE ||
+         lhs_kind == SCALAR_TYPE;
+}
+
+static
+void mcsat_notify_plugins_of_lemma(mcsat_solver_t* mcsat, ivector_t* lemma_literals) {
+  bool notify_bool = mcsat->bool_plugin_id < mcsat->plugins_count;
+  bool notify_na = mcsat_clause_routes_to_na(mcsat, lemma_literals);
+  bool notify_uf = mcsat_clause_routes_to_uf(mcsat, lemma_literals);
+
+  if (notify_bool) {
+    mcsat_notify_plugin_of_lemma(mcsat, mcsat->bool_plugin_id, lemma_literals);
+  }
+  if (notify_na) {
+    mcsat_notify_plugin_of_lemma(mcsat, mcsat->na_plugin_id, lemma_literals);
+  }
+  if (notify_uf) {
+    mcsat_notify_plugin_of_lemma(mcsat, mcsat->uf_plugin_id, lemma_literals);
   }
 }
 
 static
 void mcsat_publish_shared_clause(mcsat_solver_t* mcsat, const ivector_t* lemma) {
   ivector_t normalized;
+  uint32_t i;
   uint64_t seq = 0;
 
   if (mcsat->shared_state == NULL ||
@@ -671,10 +828,18 @@ void mcsat_publish_shared_clause(mcsat_solver_t* mcsat, const ivector_t* lemma) 
     return;
   }
 
-  init_ivector(&normalized, 0);
+  if (mcsat->active_assumptions_count > 0 &&
+      !mcsat_active_assumptions_are_literals(mcsat)) {
+    return;
+  }
+
+  init_ivector(&normalized, lemma->size + mcsat->active_assumptions_count);
   ivector_add(&normalized, lemma->data, lemma->size);
+  for (i = 0; i < mcsat->active_assumptions_count; ++i) {
+    ivector_push(&normalized, opposite_term(mcsat->active_assumptions[i]));
+  }
   mcsat_normalize_clause_literals(&normalized);
-  if (normalized.size > 0) {
+  if (normalized.size > 0 && !mcsat_clause_is_tautology(&normalized)) {
     (void) mcsat_shared_state_publish_clause(mcsat->shared_state,
                                              mcsat->shared_lemma_session,
                                              normalized.size,
@@ -1273,6 +1438,11 @@ void mcsat_parallel_state_construct(mcsat_parallel_state_t* parallel) {
   if (code != 0) {
     perror_fatal("pthread_mutex_init");
   }
+  code = pthread_cond_init(&parallel->task_cond, NULL);
+  if (code != 0) {
+    perror_fatal("pthread_cond_init");
+  }
+  init_pvector(&parallel->task_queue, 0);
   parallel->running = false;
   parallel->stop_requested = false;
   parallel->result_ready = false;
@@ -1280,12 +1450,22 @@ void mcsat_parallel_state_construct(mcsat_parallel_state_t* parallel) {
   parallel->winner = NULL;
   parallel->workers = NULL;
   parallel->worker_count = 0;
+  parallel->active_tasks = 0;
+  parallel->max_task_depth = 0;
+  parallel->max_pending_tasks = 0;
   parallel->completed_workers = 0;
   parallel->unsat_workers = 0;
 }
 
 static
 void mcsat_parallel_state_destruct(mcsat_parallel_state_t* parallel) {
+  uint32_t i;
+
+  for (i = 0; i < parallel->task_queue.size; ++i) {
+    mcsat_parallel_frontier_task_delete((mcsat_parallel_frontier_task_t*) parallel->task_queue.data[i]);
+  }
+  delete_pvector(&parallel->task_queue);
+  pthread_cond_destroy(&parallel->task_cond);
   pthread_mutex_destroy(&parallel->result_lock);
 }
 
@@ -1385,6 +1565,9 @@ void mcsat_construct(mcsat_solver_t* mcsat, const context_t* ctx, mcsat_solver_t
   mcsat->variable_in_conflict = variable_null;
   mcsat->assumption_i = 0;
   mcsat->assumptions_decided_level = -1;
+  mcsat->assumptions_model = NULL;
+  mcsat->active_assumptions = NULL;
+  mcsat->active_assumptions_count = 0;
   mcsat->interpolant = NULL_TERM;
 
   // Assumptions vector
@@ -1821,28 +2004,41 @@ bool mcsat_term_is_safe_split_term(const mcsat_solver_t* mcsat, term_t term) {
   case UNINTERPRETED_TERM:
     return true;
 
-  case EQ_TERM: {
-    composite_term_t* eq_desc = eq_term_desc(mcsat->terms, term);
-    type_kind_t lhs_kind = term_type_kind(mcsat->terms, eq_desc->arg[0]);
-
-    return mcsat_term_is_prebuilt_input_term(mcsat, eq_desc->arg[0]) &&
-           mcsat_term_is_prebuilt_input_term(mcsat, eq_desc->arg[1]) &&
-           (lhs_kind == UNINTERPRETED_TYPE || lhs_kind == SCALAR_TYPE);
-  }
-
   default:
     return false;
   }
 }
 
 static
-bool mcsat_parallel_try_add_split_variable(mcsat_solver_t* mcsat, variable_t var, ivector_t* split_vars, int_hset_t* seen) {
+bool mcsat_parallel_try_add_split_atom(mcsat_solver_t* mcsat, term_t atom, ivector_t* split_atoms, int_hset_t* seen_terms) {
+  variable_t atom_var;
+
+  atom = unsigned_term(atom);
+  if (atom == NULL_TERM ||
+      atom == true_term ||
+      atom == false_term ||
+      term_type_kind(mcsat->terms, atom) != BOOL_TYPE ||
+      int_hset_member(seen_terms, atom)) {
+    return false;
+  }
+
+  atom_var = variable_db_get_variable_if_exists(mcsat->var_db, atom);
+  if (atom_var != variable_null && trail_has_value(mcsat->trail, atom_var)) {
+    return false;
+  }
+
+  int_hset_add(seen_terms, atom);
+  ivector_push(split_atoms, atom);
+  return true;
+}
+
+static
+bool mcsat_parallel_try_add_boolean_split_variable(mcsat_solver_t* mcsat, variable_t var, ivector_t* split_atoms, int_hset_t* seen_terms) {
   term_t term;
 
   if (var == variable_null ||
       var >= mcsat->var_db->variable_to_term_map.size ||
       mcsat->var_db->variable_to_term_map.data[var] == NULL_TERM ||
-      int_hset_member(seen, var) ||
       trail_has_value(mcsat->trail, var) ||
       !variable_db_is_boolean(mcsat->var_db, var)) {
     return false;
@@ -1853,40 +2049,189 @@ bool mcsat_parallel_try_add_split_variable(mcsat_solver_t* mcsat, variable_t var
     return false;
   }
 
-  int_hset_add(seen, var);
-  ivector_push(split_vars, var);
+  return mcsat_parallel_try_add_split_atom(mcsat, term, split_atoms, seen_terms);
+}
+
+static
+void mcsat_parallel_lp_value_to_rational(const lp_value_t* value, rational_t* out) {
+  lp_rational_t q_lp;
+
+  assert(value != NULL);
+  assert(value->type == LP_VALUE_RATIONAL);
+
+  lp_rational_construct(&q_lp);
+  lp_value_get_rational(value, &q_lp);
+  q_set_mpq(out, &q_lp);
+  lp_rational_destruct(&q_lp);
+}
+
+static
+bool mcsat_parallel_make_power_of_two_split(const rational_t* bound, bool positive_side, rational_t* out) {
+  double bound_d;
+  int64_t magnitude;
+
+  bound_d = q_get_double((rational_t*) bound);
+  if (isnan(bound_d) || isinf(bound_d)) {
+    return false;
+  }
+
+  magnitude = 1;
+  if (positive_side) {
+    while ((double) magnitude <= bound_d && magnitude < (INT64_C(1) << 30)) {
+      magnitude <<= 1;
+    }
+    q_set64(out, magnitude);
+  } else {
+    while ((double) magnitude < -bound_d && magnitude < (INT64_C(1) << 30)) {
+      magnitude <<= 1;
+    }
+    q_set64(out, -magnitude);
+  }
+
   return true;
 }
 
 static
-uint32_t mcsat_parallel_collect_split_variables(mcsat_solver_t* mcsat, uint32_t max_split_vars, ivector_t* out) {
-  uint32_t i;
-  int_hset_t seen;
+bool mcsat_parallel_try_add_na_split_variable(mcsat_solver_t* mcsat, variable_t var, ivector_t* split_atoms, int_hset_t* seen_terms) {
+  na_plugin_t* na;
+  const lp_feasibility_set_t* feasible;
+  term_t var_term;
+  type_kind_t var_type_kind;
+  lp_interval_t interval;
+  const lp_value_t* lower;
+  const lp_value_t* upper;
+  rational_t lower_q;
+  rational_t upper_q;
+  rational_t bound_q;
+  rational_t zero_q;
+  term_t bound_term;
+  term_t split_atom;
+  bool added = false;
+  bool lower_finite;
+  bool upper_finite;
 
-  ivector_reset(out);
-  if (max_split_vars == 0) {
-    return 0;
+  if (mcsat->na_plugin_id >= mcsat->plugins_count ||
+      var == variable_null ||
+      var >= mcsat->var_db->variable_to_term_map.size ||
+      mcsat->var_db->variable_to_term_map.data[var] == NULL_TERM ||
+      trail_has_value(mcsat->trail, var)) {
+    return false;
   }
 
-  init_int_hset(&seen, 0);
-
-  for (i = 0; i < mcsat->top_decision_vars.size && out->size < max_split_vars; ++i) {
-    (void) mcsat_parallel_try_add_split_variable(mcsat, mcsat->top_decision_vars.data[i], out, &seen);
+  var_term = variable_db_get_term(mcsat->var_db, var);
+  var_type_kind = term_type_kind(mcsat->terms, var_term);
+  if (!(var_type_kind == REAL_TYPE || var_type_kind == INT_TYPE)) {
+    return false;
+  }
+  if (!mcsat_term_is_prebuilt_input_term(mcsat, var_term)) {
+    return false;
   }
 
-  for (i = 0; i < mcsat->ctx->mcsat_var_order.size && out->size < max_split_vars; ++i) {
-    term_t t = mcsat->ctx->mcsat_var_order.data[i];
-    variable_t var = variable_db_get_variable_if_exists(mcsat->var_db, unsigned_term(t));
-    if (var != variable_null) {
-      (void) mcsat_parallel_try_add_split_variable(mcsat, var, out, &seen);
+  na = (na_plugin_t*) mcsat->plugins[mcsat->na_plugin_id].plugin;
+  feasible = feasible_set_db_get(na->feasible_set_db, var);
+  if (feasible == NULL ||
+      lp_feasibility_set_is_empty(feasible) ||
+      lp_feasibility_set_is_full(feasible)) {
+    return false;
+  }
+  lp_interval_construct_full(&interval);
+  feasible_set_db_approximate_value(na->feasible_set_db, var, &interval);
+
+  q_init(&lower_q);
+  q_init(&upper_q);
+  q_init(&bound_q);
+  q_init(&zero_q);
+  q_set32(&zero_q, 0);
+
+  lower = lp_interval_get_lower_bound(&interval);
+  upper = lp_interval_get_upper_bound(&interval);
+  lower_finite = lower != NULL && lower->type == LP_VALUE_RATIONAL;
+  upper_finite = upper != NULL && upper->type == LP_VALUE_RATIONAL;
+
+  if (lower_finite) {
+    mcsat_parallel_lp_value_to_rational(lower, &lower_q);
+  }
+  if (upper_finite) {
+    mcsat_parallel_lp_value_to_rational(upper, &upper_q);
+  }
+
+  if ((lower == NULL || lower->type == LP_VALUE_MINUS_INFINITY || q_cmp(&lower_q, &zero_q) <= 0) &&
+      (upper == NULL || upper->type == LP_VALUE_PLUS_INFINITY || q_cmp(&upper_q, &zero_q) > 0)) {
+    split_atom = _o_yices_arith_geq0_atom(var_term);
+    added = mcsat_parallel_try_add_split_atom(mcsat, split_atom, split_atoms, seen_terms);
+  } else if (lower_finite && upper_finite && q_cmp(&lower_q, &upper_q) < 0) {
+    q_set(&bound_q, &lower_q);
+    q_add(&bound_q, &upper_q);
+    q_set32(&zero_q, 2);
+    q_div(&bound_q, &zero_q);
+    q_set32(&zero_q, 0);
+    if (variable_db_is_int(mcsat->var_db, var)) {
+      q_ceil(&bound_q);
+    }
+    if (q_cmp(&bound_q, &lower_q) > 0 && q_cmp(&bound_q, &upper_q) <= 0) {
+      bound_term = mk_arith_constant(&mcsat->tm, &bound_q);
+      split_atom = _o_yices_arith_geq_atom(var_term, bound_term);
+      added = mcsat_parallel_try_add_split_atom(mcsat, split_atom, split_atoms, seen_terms);
+    }
+  } else if (lower_finite && q_cmp(&lower_q, &zero_q) >= 0) {
+    if (mcsat_parallel_make_power_of_two_split(&lower_q, true, &bound_q)) {
+      bound_term = mk_arith_constant(&mcsat->tm, &bound_q);
+      split_atom = _o_yices_arith_geq_atom(var_term, bound_term);
+      added = mcsat_parallel_try_add_split_atom(mcsat, split_atom, split_atoms, seen_terms);
+    }
+  } else if (upper_finite && q_cmp(&upper_q, &zero_q) <= 0) {
+    if (mcsat_parallel_make_power_of_two_split(&upper_q, false, &bound_q)) {
+      bound_term = mk_arith_constant(&mcsat->tm, &bound_q);
+      split_atom = _o_yices_arith_geq_atom(var_term, bound_term);
+      added = mcsat_parallel_try_add_split_atom(mcsat, split_atom, split_atoms, seen_terms);
     }
   }
 
-  for (i = 1; i <= mcsat->var_queue.heap_last && out->size < max_split_vars; ++i) {
-    (void) mcsat_parallel_try_add_split_variable(mcsat, mcsat->var_queue.heap[i], out, &seen);
+  q_clear(&zero_q);
+  q_clear(&bound_q);
+  q_clear(&upper_q);
+  q_clear(&lower_q);
+  lp_interval_destruct(&interval);
+  return added;
+}
+
+static
+uint32_t mcsat_parallel_collect_split_literals(mcsat_solver_t* mcsat, uint32_t max_split_literals, ivector_t* out) {
+  uint32_t i;
+  int_hset_t seen_terms;
+
+  ivector_reset(out);
+  if (max_split_literals == 0) {
+    return 0;
   }
 
-  delete_int_hset(&seen);
+  init_int_hset(&seen_terms, 0);
+
+  for (i = 0; i < mcsat->top_decision_vars.size && out->size < max_split_literals; ++i) {
+    variable_t var = mcsat->top_decision_vars.data[i];
+    if (!mcsat_parallel_try_add_boolean_split_variable(mcsat, var, out, &seen_terms)) {
+      (void) mcsat_parallel_try_add_na_split_variable(mcsat, var, out, &seen_terms);
+    }
+  }
+
+  for (i = 0; i < mcsat->ctx->mcsat_var_order.size && out->size < max_split_literals; ++i) {
+    term_t t = mcsat->ctx->mcsat_var_order.data[i];
+    variable_t var = variable_db_get_variable_if_exists(mcsat->var_db, unsigned_term(t));
+    if (var != variable_null) {
+      if (!mcsat_parallel_try_add_boolean_split_variable(mcsat, var, out, &seen_terms)) {
+        (void) mcsat_parallel_try_add_na_split_variable(mcsat, var, out, &seen_terms);
+      }
+    }
+  }
+
+  for (i = 1; i <= mcsat->var_queue.heap_last && out->size < max_split_literals; ++i) {
+    variable_t var = mcsat->var_queue.heap[i];
+    if (!mcsat_parallel_try_add_boolean_split_variable(mcsat, var, out, &seen_terms)) {
+      (void) mcsat_parallel_try_add_na_split_variable(mcsat, var, out, &seen_terms);
+    }
+  }
+
+  delete_int_hset(&seen_terms);
   return out->size;
 }
 
@@ -2158,6 +2503,13 @@ void mcsat_process_requests(mcsat_solver_t* mcsat) {
         mcsat->assumption_i = 0;
       }
       mcsat_backtrack_to(mcsat, backtrack_level, false);
+      if (backtrack_level == mcsat->trail->decision_level_base &&
+          mcsat->assumptions_model == NULL &&
+          mcsat->active_assumptions_count > 0) {
+        (void) mcsat_apply_literal_assumptions(mcsat,
+                                               mcsat->active_assumptions_count,
+                                               mcsat->active_assumptions);
+      }
       mcsat->pending_requests_all.restart = false;
       // notify if backtracked to base level
       if (backtrack_level == mcsat->trail->decision_level_base) {
@@ -3031,6 +3383,10 @@ void mcsat_analyze_conflicts(mcsat_solver_t* mcsat, uint32_t* restart_resource) 
 
 static
 bool mcsat_decide_assumption(mcsat_solver_t* mcsat, model_t* mdl, uint32_t n_assumptions, const term_t assumptions[]) {
+  if (mdl == NULL || n_assumptions == 0) {
+    return false;
+  }
+
   assert(!mcsat->trail->inconsistent);
 
   variable_t var;
@@ -3086,6 +3442,8 @@ bool mcsat_decide_assumption(mcsat_solver_t* mcsat, model_t* mdl, uint32_t n_ass
           mcsat->plugin_in_conflict = mcsat->plugins[plugin_i].plugin_ctx;
         }
         mcsat->variable_in_conflict = var;
+      } else if ((int32_t) trail_get_level(mcsat->trail, var) > mcsat->assumptions_decided_level) {
+        mcsat->assumptions_decided_level = (int32_t) trail_get_level(mcsat->trail, var);
       }
     } else {
       // Plugin used to check/decide
@@ -3154,6 +3512,9 @@ bool mcsat_apply_literal_assumptions(mcsat_solver_t* mcsat, uint32_t n_assumptio
         mcsat->variable_in_conflict = var;
         return false;
       }
+      if ((int32_t) trail_get_level(mcsat->trail, var) > mcsat->assumptions_decided_level) {
+        mcsat->assumptions_decided_level = (int32_t) trail_get_level(mcsat->trail, var);
+      }
       continue;
     }
 
@@ -3171,6 +3532,27 @@ bool mcsat_apply_literal_assumptions(mcsat_solver_t* mcsat, uint32_t n_assumptio
     assert(decision_token.used);
     (*mcsat->solver_stats.decisions)++;
     mcsat->assumptions_decided_level = mcsat->trail->decision_level;
+  }
+
+  return true;
+}
+
+static
+bool mcsat_sat_respects_literal_assumptions(mcsat_solver_t* mcsat, uint32_t n_assumptions, const term_t assumptions[]) {
+  uint32_t i;
+
+  for (i = 0; i < n_assumptions; ++i) {
+    term_t literal = assumptions[i];
+    term_t atom = unsigned_term(literal);
+    variable_t var = variable_db_get_variable_if_exists(mcsat->var_db, atom);
+    bool expected = (literal == atom);
+
+    if (var == variable_null ||
+        !trail_has_value(mcsat->trail, var) ||
+        trail_get_value(mcsat->trail, var)->type != VALUE_BOOLEAN ||
+        trail_get_boolean_value(mcsat->trail, var) != expected) {
+      return false;
+    }
   }
 
   return true;
@@ -3487,6 +3869,15 @@ void mcsat_solve_local(mcsat_solver_t* mcsat, const param_t *params, model_t* md
   uint32_t restart_resource;
   luby_t luby;
 
+  // Initialize assumption bookkeeping before any assumption is applied.
+  mcsat->interpolant = NULL_TERM;
+  mcsat->variable_in_conflict = variable_null;
+  mcsat->assumption_i = 0;
+  mcsat->assumptions_decided_level = -1;
+  mcsat->assumptions_model = mdl;
+  mcsat->active_assumptions = assumptions;
+  mcsat->active_assumptions_count = n_assumptions;
+
   // Make sure we have variables for all the assumptions
   if (n_assumptions > 0) {
     if (trace_enabled(mcsat->ctx->trace, "mcsat")) {
@@ -3523,13 +3914,6 @@ void mcsat_solve_local(mcsat_solver_t* mcsat, const param_t *params, model_t* md
     }
   }
 assumptions_done:
-
-  // Initialize assumption info
-  mcsat->interpolant = NULL_TERM;
-  mcsat->variable_in_conflict = variable_null;
-  mcsat->assumption_i = 0;
-  mcsat->assumptions_decided_level = -1;
-  mcsat->assumptions_model = mdl;
 
   // Start the search
   mcsat->status = YICES_STATUS_SEARCHING;
@@ -3579,7 +3963,9 @@ assumptions_done:
     }
 
     // Do we restart
-    if (mcsat_is_consistent(mcsat) && restart_resource > luby.restart_threshold) {
+    if (mcsat_is_consistent(mcsat) &&
+        restart_resource > luby.restart_threshold &&
+        !(mcsat->active_assumptions_count > 0 && mcsat->assumptions_model == NULL)) {
       restart_resource = 0;
       luby_next(&luby);
       mcsat_request_restart(mcsat);
@@ -3693,6 +4079,8 @@ assumptions_done:
   mcsat_process_registration_queue(mcsat);
 
 solve_done:
+  mcsat->active_assumptions = NULL;
+  mcsat->active_assumptions_count = 0;
   ivector_reset(&mcsat->assumption_vars);
 }
 
@@ -3766,64 +4154,234 @@ mcsat_solver_t* mcsat_new_worker_replica(mcsat_solver_t* owner, uint32_t worker_
 }
 
 static
-void mcsat_parallel_report_result(mcsat_solver_t* worker) {
-  mcsat_solver_t* root;
-  mcsat_parallel_state_t* parallel;
+bool mcsat_parallel_frontier_task_should_split(const mcsat_parallel_state_t* parallel,
+                                               const mcsat_parallel_frontier_task_t* task) {
+  return task->split_depth < parallel->max_task_depth;
+}
 
-  root = mcsat_parallel_root(worker);
-  parallel = root->parallel_state;
-  if (parallel == NULL) {
-    return;
+static
+mcsat_parallel_frontier_task_t* mcsat_parallel_frontier_task_new(uint32_t n_assumptions,
+                                                                 const term_t assumptions[],
+                                                                 uint32_t split_depth) {
+  mcsat_parallel_frontier_task_t* task;
+
+  task = (mcsat_parallel_frontier_task_t*) safe_malloc(sizeof(mcsat_parallel_frontier_task_t));
+  task->n_assumptions = n_assumptions;
+  task->split_depth = split_depth;
+  if (n_assumptions == 0) {
+    task->assumptions = NULL;
+  } else {
+    task->assumptions = (term_t*) safe_malloc(n_assumptions * sizeof(term_t));
+    if (assumptions != NULL) {
+      memcpy(task->assumptions, assumptions, n_assumptions * sizeof(term_t));
+    }
   }
+
+  return task;
+}
+
+static
+mcsat_parallel_frontier_task_t* mcsat_parallel_frontier_task_extend(const mcsat_parallel_frontier_task_t* parent,
+                                                                    term_t assumption) {
+  mcsat_parallel_frontier_task_t* task;
+
+  task = mcsat_parallel_frontier_task_new(parent->n_assumptions + 1, NULL, parent->split_depth + 1);
+  if (parent->n_assumptions > 0) {
+    memcpy(task->assumptions, parent->assumptions, parent->n_assumptions * sizeof(term_t));
+  }
+  task->assumptions[parent->n_assumptions] = assumption;
+  return task;
+}
+
+static
+mcsat_parallel_frontier_task_t* mcsat_parallel_take_task(mcsat_parallel_state_t* parallel) {
+  mcsat_parallel_frontier_task_t* task;
 
   pthread_mutex_lock(&parallel->result_lock);
-  parallel->completed_workers ++;
+  while (!parallel->stop_requested &&
+         !parallel->result_ready &&
+         parallel->task_queue.size == 0 &&
+         parallel->active_tasks > 0) {
+    pthread_cond_wait(&parallel->task_cond, &parallel->result_lock);
+  }
 
-  if ((worker->status == YICES_STATUS_SAT || worker->status == YICES_STATUS_ERROR) &&
+  if (parallel->stop_requested ||
+      parallel->result_ready ||
+      parallel->task_queue.size == 0) {
+    pthread_mutex_unlock(&parallel->result_lock);
+    return NULL;
+  }
+
+  task = (mcsat_parallel_frontier_task_t*) pvector_pop2(&parallel->task_queue);
+  parallel->active_tasks ++;
+  pthread_mutex_unlock(&parallel->result_lock);
+  return task;
+}
+
+static
+void mcsat_parallel_finish_task(mcsat_parallel_state_t* parallel,
+                                mcsat_solver_t* worker,
+                                mcsat_parallel_frontier_task_t* task,
+                                smt_status_t status,
+                                pvector_t* spawned_tasks) {
+  uint32_t i;
+
+  pthread_mutex_lock(&parallel->result_lock);
+  assert(parallel->active_tasks > 0);
+  parallel->active_tasks --;
+
+  if ((status == YICES_STATUS_SAT || status == YICES_STATUS_ERROR) &&
       !parallel->result_ready) {
     parallel->result_ready = true;
-    parallel->result_status = worker->status;
+    parallel->result_status = status;
     parallel->winner = worker;
     mcsat_parallel_request_stop_locked(parallel);
-  } else if (worker->status == YICES_STATUS_UNSAT) {
-    parallel->unsat_workers ++;
-    if (parallel->winner == NULL) {
-      parallel->winner = worker;
-    }
-    if (!parallel->result_ready && parallel->unsat_workers == parallel->worker_count) {
-      parallel->result_ready = true;
-      parallel->result_status = YICES_STATUS_UNSAT;
-      mcsat_parallel_request_stop_locked(parallel);
-    }
-  } else if (!parallel->result_ready && parallel->completed_workers == parallel->worker_count) {
-    parallel->result_ready = true;
-    parallel->result_status = YICES_STATUS_IDLE;
   }
+
+  if (!parallel->result_ready && !parallel->stop_requested && spawned_tasks != NULL) {
+    for (i = 0; i < spawned_tasks->size; ++i) {
+      pvector_push(&parallel->task_queue, spawned_tasks->data[i]);
+      spawned_tasks->data[i] = NULL;
+    }
+  }
+
+  if (!parallel->result_ready &&
+      !parallel->stop_requested &&
+      !mcsat_parallel_has_pending_tasks_locked(parallel)) {
+    parallel->result_ready = true;
+    parallel->result_status = YICES_STATUS_UNSAT;
+    mcsat_parallel_broadcast_locked(parallel);
+  } else {
+    mcsat_parallel_broadcast_locked(parallel);
+  }
+
   pthread_mutex_unlock(&parallel->result_lock);
+
+  if (spawned_tasks != NULL) {
+    for (i = 0; i < spawned_tasks->size; ++i) {
+      mcsat_parallel_frontier_task_delete((mcsat_parallel_frontier_task_t*) spawned_tasks->data[i]);
+    }
+    pvector_reset(spawned_tasks);
+  }
+  mcsat_parallel_frontier_task_delete(task);
+}
+
+static
+bool mcsat_parallel_try_split_frontier_task(mcsat_solver_t* worker,
+                                            const mcsat_parallel_frontier_task_t* task,
+                                            pvector_t* spawned_tasks) {
+  ivector_t split_atoms;
+  bool split = false;
+
+  init_ivector(&split_atoms, 0);
+  if (mcsat_parallel_collect_split_literals(worker, 1, &split_atoms) > 0) {
+    term_t atom = split_atoms.data[0];
+    pvector_push(spawned_tasks, mcsat_parallel_frontier_task_extend(task, atom));
+    pvector_push(spawned_tasks, mcsat_parallel_frontier_task_extend(task, opposite_term(atom)));
+    split = true;
+  }
+  delete_ivector(&split_atoms);
+  return split;
 }
 
 static
 void* mcsat_parallel_worker_main(void* data) {
-  mcsat_parallel_worker_task_t* task;
+  mcsat_parallel_worker_task_t* task_info;
+  mcsat_parallel_state_t* parallel;
   mcsat_solver_t* worker;
-  int32_t code;
+  mcsat_parallel_frontier_task_t* task;
 
-  task = (mcsat_parallel_worker_task_t*) data;
-  worker = task->worker;
-  worker->frontier_epoch_mode = task->frontier_epoch_mode;
-  worker->frontier_epoch_conflict_budget = task->frontier_epoch_conflict_budget;
-  worker->frontier_epoch_conflicts = 0;
-  code = setjmp(worker->worker_env);
-  if (code == 0) {
-    mcsat_solve_local(worker, task->params, task->mdl, task->n_assumptions, task->assumptions);
-  } else {
-    mcsat_term_unlock_all(worker);
-    worker->status = YICES_STATUS_ERROR;
+  task_info = (mcsat_parallel_worker_task_t*) data;
+  parallel = task_info->parallel;
+  worker = task_info->worker;
+
+  for (;;) {
+    bool force_complete = false;
+    uint32_t sat_retry_count = 0;
+
+    task = mcsat_parallel_take_task(parallel);
+    if (task == NULL) {
+      break;
+    }
+
+    for (;;) {
+      int32_t code;
+      bool frontier_mode = !force_complete && mcsat_parallel_frontier_task_should_split(parallel, task);
+
+      worker->frontier_epoch_mode = frontier_mode;
+      worker->frontier_epoch_conflict_budget = frontier_mode ? MCSAT_PARALLEL_EPOCH_CONFLICT_BUDGET : 0;
+      worker->frontier_epoch_conflicts = 0;
+
+      code = setjmp(worker->worker_env);
+      if (code == 0) {
+        mcsat_solve_local(worker, task_info->params, task_info->mdl, task->n_assumptions, task->assumptions);
+      } else {
+        mcsat_term_unlock_all(worker);
+        worker->status = YICES_STATUS_ERROR;
+      }
+
+      worker->frontier_epoch_mode = false;
+      worker->frontier_epoch_conflict_budget = 0;
+
+      if (worker->status == YICES_STATUS_SAT &&
+          task->n_assumptions > 0 &&
+          !mcsat_sat_respects_literal_assumptions(worker, task->n_assumptions, task->assumptions)) {
+        sat_retry_count ++;
+        if (sat_retry_count >= 3) {
+          worker->status = YICES_STATUS_ERROR;
+        } else {
+          mcsat_cleanup_assumptions(worker);
+          mcsat_clear_local(worker);
+          continue;
+        }
+      }
+
+      if (worker->status == YICES_STATUS_IDLE &&
+          frontier_mode &&
+          !mcsat_should_stop(worker)) {
+        bool can_split;
+        pvector_t spawned_tasks;
+
+        pthread_mutex_lock(&parallel->result_lock);
+        can_split = !parallel->result_ready &&
+                    !parallel->stop_requested &&
+                    (parallel->task_queue.size + parallel->active_tasks < parallel->max_pending_tasks);
+        pthread_mutex_unlock(&parallel->result_lock);
+
+        init_pvector(&spawned_tasks, 0);
+        if (can_split && mcsat_parallel_try_split_frontier_task(worker, task, &spawned_tasks)) {
+          mcsat_cleanup_assumptions(worker);
+          mcsat_clear_local(worker);
+          mcsat_parallel_finish_task(parallel, worker, task, YICES_STATUS_IDLE, &spawned_tasks);
+          delete_pvector(&spawned_tasks);
+          break;
+        }
+        delete_pvector(&spawned_tasks);
+
+        mcsat_cleanup_assumptions(worker);
+        mcsat_clear_local(worker);
+        force_complete = true;
+        continue;
+      }
+
+      if (worker->status != YICES_STATUS_SAT && worker->status != YICES_STATUS_ERROR) {
+        mcsat_cleanup_assumptions(worker);
+        mcsat_clear_local(worker);
+      }
+
+      mcsat_parallel_finish_task(parallel, worker, task, worker->status, NULL);
+      if (worker->status == YICES_STATUS_SAT || worker->status == YICES_STATUS_ERROR) {
+        goto done;
+      }
+      break;
+    }
   }
-  worker->frontier_epoch_mode = false;
-  worker->frontier_epoch_conflict_budget = 0;
 
-  mcsat_parallel_report_result(worker);
+done:
+  pthread_mutex_lock(&parallel->result_lock);
+  parallel->completed_workers ++;
+  mcsat_parallel_broadcast_locked(parallel);
+  pthread_mutex_unlock(&parallel->result_lock);
   mcsat_shared_state_unregister_thread();
   return NULL;
 }
@@ -3841,12 +4399,59 @@ void mcsat_parallel_destroy_replicas(mcsat_solver_t** workers, uint32_t count, m
 }
 
 static
+void mcsat_parallel_seed_initial_tasks(mcsat_solver_t* mcsat,
+                                       mcsat_parallel_state_t* parallel,
+                                       uint32_t requested_workers) {
+  ivector_t split_atoms;
+  uint32_t i;
+  uint32_t branch;
+  uint32_t max_initial_split_literals;
+  uint32_t task_capacity;
+  uint32_t split_count;
+
+  init_ivector(&split_atoms, 0);
+
+  max_initial_split_literals = 0;
+  task_capacity = 1;
+  while (task_capacity < requested_workers &&
+         (task_capacity << 1) <= parallel->max_pending_tasks) {
+    task_capacity <<= 1;
+    max_initial_split_literals ++;
+  }
+
+  split_count = mcsat_parallel_collect_split_literals(mcsat, max_initial_split_literals, &split_atoms);
+  parallel->max_task_depth = split_count;
+  if (split_count == 0) {
+    pvector_push(&parallel->task_queue, mcsat_parallel_frontier_task_new(0, NULL, 0));
+  } else {
+    uint32_t branch_count = 1u << split_count;
+    term_t* assumptions = (term_t*) safe_malloc(split_count * sizeof(term_t));
+
+    for (branch = 0; branch < branch_count; ++branch) {
+      for (i = 0; i < split_count; ++i) {
+        term_t atom = split_atoms.data[i];
+        assumptions[i] = ((branch >> i) & 1u) ? atom : opposite_term(atom);
+      }
+      pvector_push(&parallel->task_queue,
+                   mcsat_parallel_frontier_task_new(split_count, assumptions, split_count));
+    }
+
+    safe_free(assumptions);
+  }
+
+  delete_ivector(&split_atoms);
+  if (parallel->task_queue.size == 0) {
+    pvector_push(&parallel->task_queue, mcsat_parallel_frontier_task_new(0, NULL, 0));
+  }
+  (void) requested_workers;
+}
+
+static
 void mcsat_solve_parallel(mcsat_solver_t* mcsat, const param_t *params, model_t* mdl, uint32_t n_assumptions, const term_t assumptions[]) {
   mcsat_parallel_state_t* parallel;
   uint32_t requested_workers;
-  uint32_t worker_capacity;
+  uint32_t active_count;
   uint32_t i;
-  uint32_t branch;
   uint64_t session;
   uint64_t base_cursor;
   int32_t code;
@@ -3856,13 +4461,6 @@ void mcsat_solve_parallel(mcsat_solver_t* mcsat, const param_t *params, model_t*
   pthread_attr_t thread_attr;
   mcsat_parallel_worker_task_t* tasks;
   mcsat_solver_t* winner;
-  ivector_t split_vars;
-  term_t* split_assumptions;
-  uint32_t split_var_count;
-  uint32_t max_split_vars;
-  uint32_t* active_branches;
-  bool* branch_open;
-  bool use_local_fallback;
 
   parallel = mcsat->parallel_state;
   assert(parallel != NULL);
@@ -3879,28 +4477,12 @@ void mcsat_solve_parallel(mcsat_solver_t* mcsat, const param_t *params, model_t*
     return;
   }
 
-  // Freeze the entry frontier before we choose split atoms or publish shared term state.
   mcsat->terms_size_on_solver_entry = nterms(mcsat->terms);
   mcsat_process_registration_queue(mcsat);
-  init_ivector(&split_vars, 0);
-  max_split_vars = 0;
-  worker_capacity = 1;
-  while ((worker_capacity << 1) <= requested_workers) {
-    worker_capacity <<= 1;
-    max_split_vars ++;
-  }
-  split_var_count = mcsat_parallel_collect_split_variables(mcsat, max_split_vars, &split_vars);
-  worker_capacity = split_var_count == 0 ? 1u : (1u << split_var_count);
-  if (worker_capacity <= 1) {
-    delete_ivector(&split_vars);
-    mcsat_reset_shared_lemma_session(mcsat, session, base_cursor);
-    mcsat_solve_local(mcsat, params, mdl, n_assumptions, assumptions);
-    mcsat_clear_pending_model_hint(mcsat);
-    return;
-  }
-
   mcsat_parallel_prepare_term_state(mcsat);
   mcsat_parallel_destroy_winner(mcsat);
+  mcsat_reset_shared_lemma_session(mcsat, session, base_cursor);
+
   parallel->running = true;
   parallel->stop_requested = false;
   parallel->result_ready = false;
@@ -3908,21 +4490,17 @@ void mcsat_solve_parallel(mcsat_solver_t* mcsat, const param_t *params, model_t*
   parallel->winner = NULL;
   parallel->completed_workers = 0;
   parallel->unsat_workers = 0;
+  parallel->active_tasks = 0;
+  parallel->max_pending_tasks = requested_workers * MCSAT_PARALLEL_TASK_MULTIPLIER;
   mcsat->stop_search = false;
   mcsat->status = YICES_STATUS_SEARCHING;
 
-  workers = (mcsat_solver_t**) safe_malloc(worker_capacity * sizeof(mcsat_solver_t*));
-  threads = (pthread_t*) safe_malloc(worker_capacity * sizeof(pthread_t));
-  tasks = (mcsat_parallel_worker_task_t*) safe_malloc(worker_capacity * sizeof(mcsat_parallel_worker_task_t));
-  split_assumptions = (term_t*) safe_malloc(worker_capacity * split_var_count * sizeof(term_t));
-  active_branches = (uint32_t*) safe_malloc(worker_capacity * sizeof(uint32_t));
-  branch_open = (bool*) safe_malloc(worker_capacity * sizeof(bool));
-  for (i = 0; i < worker_capacity; ++i) {
+  workers = (mcsat_solver_t**) safe_malloc(requested_workers * sizeof(mcsat_solver_t*));
+  threads = (pthread_t*) safe_malloc(requested_workers * sizeof(pthread_t));
+  tasks = (mcsat_parallel_worker_task_t*) safe_malloc(requested_workers * sizeof(mcsat_parallel_worker_task_t));
+  for (i = 0; i < requested_workers; ++i) {
     workers[i] = NULL;
-    branch_open[i] = true;
   }
-
-  mcsat_reset_shared_lemma_session(mcsat, session, base_cursor);
 
   code = pthread_attr_init(&thread_attr);
   if (code != 0) {
@@ -3939,134 +4517,78 @@ void mcsat_solve_parallel(mcsat_solver_t* mcsat, const param_t *params, model_t*
     }
   }
 
-  for (branch = 0; branch < worker_capacity; ++branch) {
-    for (i = 0; i < split_var_count; ++i) {
-      term_t atom = variable_db_get_term(mcsat->var_db, split_vars.data[i]);
-      split_assumptions[branch * split_var_count + i] = ((branch >> i) & 1u) ? atom : opposite_term(atom);
+  pthread_mutex_lock(&parallel->result_lock);
+  mcsat_parallel_clear_task_queue_locked(parallel);
+  mcsat_parallel_seed_initial_tasks(mcsat, parallel, requested_workers);
+  parallel->workers = workers;
+  parallel->worker_count = requested_workers;
+  pthread_mutex_unlock(&parallel->result_lock);
+
+  winner = NULL;
+  active_count = requested_workers;
+  for (i = 0; i < active_count; ++i) {
+    workers[i] = mcsat_new_worker_replica(mcsat, i);
+    mcsat_process_registration_queue(workers[i]);
+    mcsat_reset_shared_lemma_session(workers[i], session, base_cursor);
+    if (mcsat->pending_model_hint_model != NULL && mcsat->pending_model_hint_filter.size > 0) {
+      mcsat_set_model_hint_local(workers[i],
+                                 mcsat->pending_model_hint_model,
+                                 mcsat->pending_model_hint_filter.size,
+                                 mcsat->pending_model_hint_filter.data);
+    }
+
+    tasks[i].worker = workers[i];
+    tasks[i].parallel = parallel;
+    tasks[i].params = params;
+    tasks[i].mdl = NULL;
+  }
+
+  for (i = 0; i < active_count; ++i) {
+    if (pthread_create(&threads[i], &thread_attr, mcsat_parallel_worker_main, &tasks[i]) != 0) {
+      perror_fatal("pthread_create");
     }
   }
 
-  winner = NULL;
-  use_local_fallback = false;
-  while (!mcsat_should_stop(mcsat)) {
-    uint32_t active_count;
-    uint64_t epoch_start_seq;
-    uint64_t epoch_end_seq;
-    bool branch_closed_this_epoch;
+  for (i = 0; i < active_count; ++i) {
+    pthread_join(threads[i], NULL);
+  }
 
-    active_count = 0;
-    for (branch = 0; branch < worker_capacity; ++branch) {
-      if (!branch_open[branch]) {
-        continue;
-      }
+  pthread_mutex_lock(&parallel->result_lock);
+  mcsat_parallel_clear_task_queue_locked(parallel);
+  parallel->workers = NULL;
+  parallel->worker_count = 0;
+  parallel->active_tasks = 0;
+  pthread_mutex_unlock(&parallel->result_lock);
 
-      workers[active_count] = mcsat_new_worker_replica(mcsat, branch);
-      mcsat_process_registration_queue(workers[active_count]);
-      mcsat_reset_shared_lemma_session(workers[active_count], session, base_cursor);
-      if (mcsat->pending_model_hint_model != NULL && mcsat->pending_model_hint_filter.size > 0) {
-        mcsat_set_model_hint_local(workers[active_count],
-                                   mcsat->pending_model_hint_model,
-                                   mcsat->pending_model_hint_filter.size,
-                                   mcsat->pending_model_hint_filter.data);
-      }
+  if (parallel->result_ready) {
+    mcsat->status = parallel->result_status;
+  } else {
+    mcsat->status = YICES_STATUS_IDLE;
+  }
 
-      active_branches[active_count] = branch;
-      tasks[active_count].worker = workers[active_count];
-      tasks[active_count].params = params;
-      tasks[active_count].mdl = NULL;
-      tasks[active_count].n_assumptions = split_var_count;
-      tasks[active_count].assumptions = split_var_count == 0 ? NULL : split_assumptions + branch * split_var_count;
-      tasks[active_count].frontier_epoch_mode = true;
-      tasks[active_count].frontier_epoch_conflict_budget = MCSAT_PARALLEL_EPOCH_CONFLICT_BUDGET;
-      active_count ++;
+  winner = parallel->winner;
+  if (mcsat->status == YICES_STATUS_SAT ||
+      mcsat->status == YICES_STATUS_ERROR ||
+      mcsat->status == YICES_STATUS_UNSAT) {
+    if (winner == NULL && mcsat->status != YICES_STATUS_INTERRUPTED) {
+      winner = mcsat;
+      parallel->winner = winner;
     }
-
-    if (active_count == 0) {
-      mcsat->status = YICES_STATUS_UNSAT;
-      break;
-    }
-
-    pthread_mutex_lock(&parallel->result_lock);
-    parallel->workers = workers;
-    parallel->worker_count = active_count;
-    parallel->completed_workers = 0;
-    parallel->unsat_workers = 0;
-    parallel->stop_requested = false;
-    parallel->result_ready = false;
-    parallel->result_status = YICES_STATUS_IDLE;
-    parallel->winner = NULL;
-    pthread_mutex_unlock(&parallel->result_lock);
-
-    epoch_start_seq = mcsat->shared_state == NULL ? 0 : mcsat_shared_state_latest_lemma_seq(mcsat->shared_state);
+    mcsat_parallel_destroy_replicas(workers, active_count, winner);
     for (i = 0; i < active_count; ++i) {
-      if (pthread_create(&threads[i], &thread_attr, mcsat_parallel_worker_main, &tasks[i]) != 0) {
-        perror_fatal("pthread_create");
-      }
-    }
-
-    for (i = 0; i < active_count; ++i) {
-      pthread_join(threads[i], NULL);
-    }
-
-    pthread_mutex_lock(&parallel->result_lock);
-    parallel->workers = NULL;
-    parallel->worker_count = 0;
-    pthread_mutex_unlock(&parallel->result_lock);
-
-    branch_closed_this_epoch = false;
-    for (i = 0; i < active_count; ++i) {
-      if (workers[i] != NULL && workers[i]->status == YICES_STATUS_UNSAT) {
-        if (branch_open[active_branches[i]]) {
-          branch_open[active_branches[i]] = false;
-          branch_closed_this_epoch = true;
-        }
-      }
-    }
-
-    if (parallel->result_ready) {
-      mcsat->status = parallel->result_status;
-    } else {
-      mcsat->status = YICES_STATUS_IDLE;
-    }
-
-    winner = parallel->winner;
-    if (mcsat->status == YICES_STATUS_SAT ||
-        mcsat->status == YICES_STATUS_ERROR ||
-        mcsat->status == YICES_STATUS_UNSAT) {
-      if (winner == NULL && mcsat->status != YICES_STATUS_INTERRUPTED) {
-        winner = mcsat;
-        parallel->winner = winner;
-      }
-      mcsat_parallel_destroy_replicas(workers, active_count, winner);
-      for (i = 0; i < active_count; ++i) {
+      if (workers[i] != winner) {
         workers[i] = NULL;
       }
-      break;
     }
-
-    epoch_end_seq = mcsat->shared_state == NULL ? epoch_start_seq : mcsat_shared_state_latest_lemma_seq(mcsat->shared_state);
+  } else {
     mcsat_parallel_destroy_replicas(workers, active_count, NULL);
     for (i = 0; i < active_count; ++i) {
       workers[i] = NULL;
     }
     parallel->winner = NULL;
-
-    if (!(branch_closed_this_epoch || epoch_end_seq > epoch_start_seq)) {
-      use_local_fallback = true;
-      break;
-    }
   }
+
   pthread_attr_destroy(&thread_attr);
-
-  if (use_local_fallback && !mcsat_should_stop(mcsat)) {
-    mcsat_reset_shared_lemma_session(mcsat, session, base_cursor);
-    mcsat->frontier_epoch_mode = false;
-    mcsat->frontier_epoch_conflict_budget = 0;
-    mcsat->frontier_epoch_conflicts = 0;
-    mcsat_solve_local(mcsat, params, mdl, n_assumptions, assumptions);
-    winner = mcsat;
-    parallel->winner = winner;
-  }
 
   if (mcsat_should_stop(mcsat) &&
       (mcsat->status == YICES_STATUS_SEARCHING || mcsat->status == YICES_STATUS_IDLE)) {
@@ -4089,10 +4611,6 @@ void mcsat_solve_parallel(mcsat_solver_t* mcsat, const param_t *params, model_t*
   safe_free(tasks);
   safe_free(threads);
   safe_free(workers);
-  safe_free(branch_open);
-  safe_free(active_branches);
-  safe_free(split_assumptions);
-  delete_ivector(&split_vars);
   mcsat_clear_pending_model_hint(mcsat);
   mcsat_shared_state_unregister_thread();
 }

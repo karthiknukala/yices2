@@ -327,6 +327,50 @@ void uf_plugin_new_term_notify(plugin_t* plugin, term_t t, trail_token_t* prop) 
 }
 
 static
+void uf_plugin_new_lemma_notify(plugin_t* plugin, ivector_t* lemma, trail_token_t* prop) {
+  uf_plugin_t* uf = (uf_plugin_t*) plugin;
+  term_t literal;
+  term_t atom;
+  variable_t atom_var;
+  composite_term_t* eq_desc;
+  type_kind_t lhs_kind;
+
+  if (lemma->size != 1) {
+    return;
+  }
+
+  literal = lemma->data[0];
+  atom = unsigned_term(literal);
+  if (term_kind(uf->ctx->terms, atom) != EQ_TERM) {
+    return;
+  }
+
+  eq_desc = eq_term_desc(uf->ctx->terms, atom);
+  lhs_kind = term_type_kind(uf->ctx->terms, eq_desc->arg[0]);
+  if (!(lhs_kind == UNINTERPRETED_TYPE ||
+        lhs_kind == FUNCTION_TYPE ||
+        lhs_kind == SCALAR_TYPE)) {
+    return;
+  }
+
+  if (!eq_graph_has_term(&uf->eq_graph, atom)) {
+    uf_plugin_add_to_eq_graph(uf, atom, true);
+  }
+
+  atom_var = variable_db_get_variable_if_exists(uf->ctx->var_db, atom);
+  if (atom_var == variable_null || !trail_has_value(uf->ctx->trail, atom_var)) {
+    return;
+  }
+
+  eq_graph_propagate_trail_assertion(&uf->eq_graph, atom);
+  uf_plugin_process_eq_graph_propagations(uf, prop);
+  if (uf->eq_graph.in_conflict) {
+    eq_graph_get_conflict(&uf->eq_graph, &uf->conflict, NULL, &uf->tmp);
+    prop->conflict(prop);
+  }
+}
+
+static
 void uf_plugin_learn(plugin_t* plugin, trail_token_t* prop) {
   uf_plugin_t* uf = (uf_plugin_t*) plugin;
   assert(uf->conflict.size == 0);
@@ -911,7 +955,7 @@ plugin_t* uf_plugin_allocator(void) {
   plugin->plugin_interface.construct             = uf_plugin_construct;
   plugin->plugin_interface.destruct              = uf_plugin_destruct;
   plugin->plugin_interface.new_term_notify       = uf_plugin_new_term_notify;
-  plugin->plugin_interface.new_lemma_notify      = NULL;
+  plugin->plugin_interface.new_lemma_notify      = uf_plugin_new_lemma_notify;
   plugin->plugin_interface.event_notify          = NULL;
   plugin->plugin_interface.propagate             = uf_plugin_propagate;
   plugin->plugin_interface.decide                = uf_plugin_decide;
