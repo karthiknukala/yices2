@@ -5071,19 +5071,41 @@ static bool simplex_process_assertions(simplex_solver_t *solver) {
  */
 static void simplex_implied_literal(simplex_solver_t *solver, int32_t atm, int32_t i, literal_t l) {
   aprop_t *expl;
+  ivector_t *v;
 
   assert(var_of(l) == boolvar_of_atom(arith_atom(&solver->atbl, atm)));
 
   /*
-   * If we're at the base level, just assert l
-   * Otherwise, propagate l with i as antecedent
+   * The refactored egraph-centered kernel can rediscover an implication after
+   * SAT has already assigned the target literal. Re-propagating a literal
+   * that's already true is redundant; if the opposite polarity is assigned,
+   * we must report the explained theory conflict instead of trying to push a
+   * stale propagation back into SAT.
    */
-  if (solver->base_level == solver->decision_level) {
-    egraph_add_unit_clause(solver->egraph, l);
-  } else {
-    expl = make_simplex_prop_object(solver, i);
-    egraph_propagate_literal(solver->egraph, l, expl);
-    solver->stats.num_props ++;
+  switch (egraph_literal_value(solver->egraph, l)) {
+  case VAL_FALSE:
+    v = &solver->expl_vector;
+    ivector_reset(v);
+    simplex_explain_bound(solver, i, v);
+    convert_expl_to_clause(v);
+    ivector_push(v, l);
+    ivector_push(v, null_literal);
+    egraph_record_conflict(solver->egraph, v->data);
+    solver->stats.num_conflicts ++;
+    return;
+
+  case VAL_TRUE:
+    break;
+
+  default:
+    if (solver->base_level == solver->decision_level) {
+      egraph_add_unit_clause(solver->egraph, l);
+    } else {
+      expl = make_simplex_prop_object(solver, i);
+      egraph_propagate_literal(solver->egraph, l, expl);
+      solver->stats.num_props ++;
+    }
+    break;
   }
 
   // mark that atm is assigned and push the assertion into the assertion stack
@@ -9430,11 +9452,6 @@ static uint32_t simplex_trichotomy_lemma(simplex_solver_t *solver, thvar_t x1, t
   assert(t1 != null_eterm && t2 != null_eterm);
   l = egraph_make_simple_eq(solver->egraph, pos_occ(t1), pos_occ(t2));
 
-  if (solver->stats.num_tricho_lemmas + solver->stats.num_reduced_tricho < 10) {
-    printf("[tricho-start] x=%"PRId32" y=%"PRId32" eq=%"PRId32"\n", x1, x2, l);
-    fflush(stdout);
-  }
-
 #if TRACE
   printf("     trichotomy lemma: egraph atom: ");
   print_literal(stdout, l);
@@ -9460,10 +9477,6 @@ static uint32_t simplex_trichotomy_lemma(simplex_solver_t *solver, thvar_t x1, t
     printf("\n");
 #endif
     egraph_add_unit_clause(solver->egraph, not(l));
-    if (solver->stats.num_tricho_lemmas + solver->stats.num_reduced_tricho < 10) {
-      printf("[tricho-axiom] eq=%"PRId32" unit=%"PRId32"\n", l, not(l));
-      fflush(stdout);
-    }
     reset_poly_buffer(&solver->buffer);
 
 #if 0
@@ -9486,12 +9499,6 @@ static uint32_t simplex_trichotomy_lemma(simplex_solver_t *solver, thvar_t x1, t
 
     l1 = create_pos_atom(solver, y, c);   // l1 := y > c
     l2 = create_neg_atom(solver, y, c);   // l2 := y < c
-
-    if (solver->stats.num_tricho_lemmas < 10) {
-      printf("[tricho] x=%"PRId32" y=%"PRId32" eq=%"PRId32" gt=%"PRId32" lt=%"PRId32"\n",
-             x1, x2, l, l1, l2);
-      fflush(stdout);
-    }
 
 #if TRACE
     printf("     reduced to: ");

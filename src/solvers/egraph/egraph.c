@@ -3839,7 +3839,7 @@ static bool deliver_satellite_fact_now(egraph_t *egraph, etype_t i, egraph_fact_
 static bool publish_satellite_fact(egraph_t *egraph, etype_t i, egraph_fact_kind_t kind,
                                    uint32_t n, const int32_t *a, int32_t id,
                                    composite_t *hint, void *payload) {
-  if (egraph_backend_outbox_active(egraph)) {
+  if (! is_arith_etype(i) && egraph_backend_outbox_active(egraph)) {
     egraph_fact_push_words(&egraph->satellite_inbox[i], kind, n, a, id, hint, payload);
     return true;
   }
@@ -7852,16 +7852,41 @@ static bool egraph_flush_backend_outbox(egraph_t *egraph) {
 
     case EGRAPH_FACT_PROPAGATED_LITERAL:
       assert(n == 1);
-      if (egraph_literal_value(egraph, a->var[0]) != VAL_TRUE) {
+      switch (egraph_literal_value(egraph, a->var[0])) {
+      case VAL_TRUE:
+        break;
+      case VAL_FALSE:
+        /*
+         * The backend queued this propagation while the literal was still
+         * unassigned. If the opposite polarity got assigned before we flush
+         * the outbox, this propagation is stale: turning it into a unit
+         * conflict would strengthen the backend's justification into an
+         * unconditional conflict. Drop it and let the producing theory
+         * rediscover any real conflict in the next propagation/final-check
+         * round under the current trail.
+         */
+        break;
+      default:
         sat->propagate_literal(backend, a->var[0], eassertion_get_payload(a));
+        break;
       }
       break;
 
     case EGRAPH_FACT_IMPLIED_LITERAL:
       assert(n == 1);
-      if (egraph_literal_value(egraph, a->var[0]) != VAL_TRUE) {
+      switch (egraph_literal_value(egraph, a->var[0])) {
+      case VAL_TRUE:
+        break;
+      case VAL_FALSE:
+        /*
+         * Same rationale as above: a delayed implication whose literal is
+         * now false must not be collapsed into a unit theory conflict.
+         */
+        break;
+      default:
         ant = (antecedent_t) (uintptr_t) eassertion_get_payload(a);
         sat->implied_literal(backend, a->var[0], ant);
+        break;
       }
       break;
 

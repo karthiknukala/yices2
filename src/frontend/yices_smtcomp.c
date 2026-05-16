@@ -1199,6 +1199,7 @@ static int process_benchmark(void) {
     enable_diseq_and_or_flattening(&context);
     enable_variable_elimination(&context);
     enable_bvarith_elimination(&context);
+    params.use_optimistic_fcheck = false;
     params.fast_restart = true;
     params.c_factor = 1.1;
     params.d_factor = 1.1;
@@ -1377,4 +1378,3 @@ int main(int argc, char *argv[]) {
 
   return process_benchmark();
 }
-

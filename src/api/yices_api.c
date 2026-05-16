@@ -9339,6 +9339,14 @@ void yices_set_default_params(param_t *params, smt_logic_t logic, context_arch_t
     params->c_threshold = 10;
 #endif
     params->randomness = 0.0;
+    /*
+     * The optimistic reconciliation loop is still too aggressive on the
+     * egraph+BV architecture after the ESAT refactor: it can accumulate
+     * interface lemmas in a way that produces wrong UNSAT answers on
+     * QF_UFBV. Use the baseline final-check path here until the BV
+     * reconciliation protocol is made fully hub-native.
+     */
+    params->use_optimistic_fcheck = false;
     params->max_interface_eqs = 15;
     if (logic == QF_UFBV) {
       // randomness helps for the SMT benchmarks

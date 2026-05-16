@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import re
 import shlex
 import subprocess
 import sys
@@ -48,6 +49,12 @@ class RunResult:
     returncode: int
     order_index: int
     first_line: str
+
+
+@dataclass(frozen=True)
+class ExpectedResult:
+    mode: str
+    value: str
 
 
 def normalize_output(text: str) -> str:
@@ -88,11 +95,38 @@ def benchmark_gold(benchmark: Path) -> str | None:
     return normalize_output(text)
 
 
+STATUS_RE = re.compile(r"^\(set-info :status (sat|unsat|unknown)\)$")
+
+
+def benchmark_expected(benchmark: Path) -> ExpectedResult | None:
+    gold = benchmark_gold(benchmark)
+    if gold is not None:
+        return ExpectedResult("gold", gold)
+
+    try:
+        with benchmark.open("r", encoding="utf-8", errors="ignore") as inp:
+            for _ in range(64):
+                line = inp.readline()
+                if not line:
+                    break
+                match = STATUS_RE.match(line.strip())
+                if match is None:
+                    continue
+                status = match.group(1)
+                if status == "unknown":
+                    return None
+                return ExpectedResult("status", status)
+    except OSError:
+        return None
+
+    return None
+
+
 def run_solver(
     solver: SolverSpec,
     benchmark: Path,
     options: list[str],
-    expected: str | None,
+    expected: ExpectedResult | None,
     timeout: float,
     order_index: int,
 ) -> RunResult:
@@ -111,7 +145,11 @@ def run_solver(
         output = proc.stdout
         passed = proc.returncode == 0
         if expected is not None:
-            passed = passed and normalize_output(output) == expected
+            if expected.mode == "gold":
+                passed = passed and normalize_output(output) == expected.value
+            else:
+                tokens = output.split()
+                passed = passed and bool(tokens) and tokens[0] == expected.value
         first_line = output.splitlines()[0] if output.splitlines() else ""
         return RunResult(
             benchmark=str(benchmark),
@@ -331,6 +369,7 @@ def main() -> int:
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--root-dir", type=Path, default=Path.cwd())
+    parser.add_argument("--skip-plot", action="store_true")
     args = parser.parse_args()
 
     solver_a = SolverSpec(args.solver_a_name, args.solver_a_bin.resolve())
@@ -344,7 +383,7 @@ def main() -> int:
     print(f"Benchmarking {len(benchmarks)} SMT2 benchmarks", flush=True)
     for idx, benchmark in enumerate(benchmarks, start=1):
         options = benchmark_options(benchmark)
-        expected = benchmark_gold(benchmark)
+        expected = benchmark_expected(benchmark)
         pair = [solver_a, solver_b] if idx % 2 else [solver_b, solver_a]
         print(f"[{idx}/{len(benchmarks)}] {benchmark}", flush=True)
         for order_index, solver in enumerate(pair):
@@ -376,16 +415,20 @@ def main() -> int:
             out.write(f"{solver_b.name}_total_seconds={sum(b_times):.6f}\n")
 
     plot_path = outdir / "cactus.svg"
-    write_cactus_svg(
-        plot_path,
-        f"{solver_a.name} vs {solver_b.name} on SMT2 regression corpus",
-        [(solver_a.name, a_times), (solver_b.name, b_times)],
-    )
+    if not args.skip_plot:
+        write_cactus_svg(
+            plot_path,
+            f"{solver_a.name} vs {solver_b.name} on SMT2 regression corpus",
+            [(solver_a.name, a_times), (solver_b.name, b_times)],
+        )
 
     print()
     print(f"CSV: {csv_path}")
     print(f"Summary: {summary_path}")
-    print(f"Plot: {plot_path}")
+    if args.skip_plot:
+        print("Plot: skipped")
+    else:
+        print(f"Plot: {plot_path}")
     print(f"Common passing benchmarks: {len(a_times)}")
     print(f"Mismatches/failures: {mismatches}")
     return 0
