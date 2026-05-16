@@ -77,6 +77,15 @@ typedef struct {
   uint32_t envelope_count;
 } mccormick_check_t;
 
+typedef struct {
+  term_t product;
+  term_t split_term;
+  bool prefer_leq;
+  rational_t split_value;
+  rational_t decision_value;
+  rational_t gap;
+} mccormick_branch_t;
+
 static context_t* mccormick_new_context(void) {
   ctx_config_t* config;
   context_t* ctx;
@@ -747,9 +756,291 @@ static bool mccormick_should_throttle(const mccormick_t* mc, const mcsat_trail_t
          level_delta < MCCORMICK_LARGE_LEVEL_DELTA;
 }
 
-static void mccormick_hint_from_model(mccormick_check_t* check) {
+static term_t mccormick_rational_term(mccormick_t* mc, const rational_t* q) {
+  rational_t tmp;
+  term_t result;
+
+  q_init(&tmp);
+  q_set(&tmp, q);
+  result = mk_arith_constant(mc->na->ctx->tm, &tmp);
+  q_clear(&tmp);
+
+  return result;
+}
+
+static bool mccormick_model_get_rational(model_t* model, term_t t, rational_t* value) {
+  mpq_t q;
+  bool ok;
+
+  mpq_init(q);
+  ok = _o_yices_get_mpq_value(model, t, q) == 0;
+  if (ok) {
+    q_init(value);
+    q_set_mpq(value, q);
+  }
+  mpq_clear(q);
+
+  return ok;
+}
+
+static void mccormick_bound_width(const mccormick_bound_t* bound, rational_t* width) {
+  q_init(width);
+  q_set(width, &bound->ub);
+  q_sub(width, &bound->lb);
+}
+
+static void mccormick_bound_midpoint(const mccormick_bound_t* bound, rational_t* midpoint) {
+  rational_t two;
+
+  q_init(midpoint);
+  q_set(midpoint, &bound->lb);
+  q_add(midpoint, &bound->ub);
+  q_init(&two);
+  q_set32(&two, 2);
+  q_div(midpoint, &two);
+  q_clear(&two);
+}
+
+static bool mccormick_factor_is_assigned(mccormick_check_t* check, term_t t) {
+  variable_t x;
+
+  x = variable_db_get_variable_if_exists(check->mc->na->ctx->var_db, t);
+  return x != variable_null && trail_has_value(check->mc->na->ctx->trail, x);
+}
+
+static bool mccormick_product_gap(mccormick_check_t* check, model_t* model, term_t product, rational_t* gap) {
+  term_t x, y, lift;
+  rational_t x_value, y_value, lift_value, product_value;
+  bool ok;
+
+  if (!mccormick_is_degree2_product(check->mc->na->ctx->terms, product, &x, &y)) {
+    return false;
+  }
+
+  lift = mccormick_get_lift(check, product);
+  if (!mccormick_model_get_rational(model, x, &x_value)) {
+    return false;
+  }
+  if (!mccormick_model_get_rational(model, y, &y_value)) {
+    q_clear(&x_value);
+    return false;
+  }
+  if (!mccormick_model_get_rational(model, lift, &lift_value)) {
+    q_clear(&y_value);
+    q_clear(&x_value);
+    return false;
+  }
+
+  q_init(&product_value);
+  q_set(&product_value, &x_value);
+  q_mul(&product_value, &y_value);
+
+  q_init(gap);
+  q_set(gap, &lift_value);
+  q_sub(gap, &product_value);
+  if (q_is_neg(gap)) {
+    q_neg(gap);
+  }
+
+  ok = q_is_pos(gap);
+
+  q_clear(&product_value);
+  q_clear(&lift_value);
+  q_clear(&y_value);
+  q_clear(&x_value);
+
+  if (!ok) {
+    q_clear(gap);
+  }
+  return ok;
+}
+
+static bool mccormick_select_gap_branch(mccormick_check_t* check, model_t* model, mccormick_branch_t* branch) {
+  term_table_t* terms;
+  uint32_t i;
+  bool found;
+
+  terms = check->mc->na->ctx->terms;
+  found = false;
+  branch->product = NULL_TERM;
+  branch->split_term = NULL_TERM;
+  branch->prefer_leq = true;
+
+  for (i = 0; i < check->active_products.size; ++ i) {
+    term_t product, x, y, split_term;
+    mccormick_bound_t *xb, *yb, *split_bound;
+    rational_t gap, x_width, y_width, split_model_value;
+    bool x_assigned, y_assigned;
+
+    product = check->active_products.data[i];
+    if (!mccormick_is_degree2_product(terms, product, &x, &y)) {
+      continue;
+    }
+    xb = mccormick_find_bound(check, x);
+    yb = mccormick_find_bound(check, y);
+    if (xb == NULL || yb == NULL || !xb->has_lb || !xb->has_ub || !yb->has_lb || !yb->has_ub) {
+      continue;
+    }
+    if (!mccormick_product_gap(check, model, product, &gap)) {
+      continue;
+    }
+
+    mccormick_bound_width(xb, &x_width);
+    mccormick_bound_width(yb, &y_width);
+    x_assigned = mccormick_factor_is_assigned(check, x);
+    y_assigned = mccormick_factor_is_assigned(check, y);
+
+    if (x_assigned && !y_assigned) {
+      split_term = y;
+      split_bound = yb;
+    } else if (y_assigned && !x_assigned) {
+      split_term = x;
+      split_bound = xb;
+    } else if (q_gt(&x_width, &y_width)) {
+      split_term = x;
+      split_bound = xb;
+    } else {
+      split_term = y;
+      split_bound = yb;
+    }
+
+    if ((split_bound == xb && !q_is_pos(&x_width)) ||
+        (split_bound == yb && !q_is_pos(&y_width)) ||
+        (x_assigned && y_assigned)) {
+      q_clear(&y_width);
+      q_clear(&x_width);
+      q_clear(&gap);
+      continue;
+    }
+
+    if (!mccormick_model_get_rational(model, split_term, &split_model_value)) {
+      q_clear(&y_width);
+      q_clear(&x_width);
+      q_clear(&gap);
+      continue;
+    }
+
+    if (!found || q_gt(&gap, &branch->gap)) {
+      if (found) {
+        q_clear(&branch->gap);
+        q_clear(&branch->split_value);
+        q_clear(&branch->decision_value);
+      }
+      found = true;
+      branch->product = product;
+      branch->split_term = split_term;
+      q_init(&branch->gap);
+      q_set(&branch->gap, &gap);
+      mccormick_bound_midpoint(split_bound, &branch->split_value);
+      q_init(&branch->decision_value);
+      q_set(&branch->decision_value, &split_model_value);
+      branch->prefer_leq = q_cmp(&split_model_value, &branch->split_value) <= 0;
+    }
+
+    q_clear(&split_model_value);
+    q_clear(&y_width);
+    q_clear(&x_width);
+    q_clear(&gap);
+  }
+
+  return found;
+}
+
+static bool mccormick_relaxation_side_unsat(mccormick_check_t* check, term_t side_literal) {
+  term_t assump;
+  smt_status_t result;
+
+  assump = new_uninterpreted_term(check->mc->na->ctx->terms, bool_type(check->mc->na->ctx->terms->types));
+  _o_yices_assert_formula(check->ctx, _o_yices_implies(assump, side_literal));
+  ivector_push(&check->assumptions, assump);
+  (*check->mc->stats.tighten_checks) ++;
+  result = _o_yices_check_context_with_assumptions(check->ctx, NULL, check->assumptions.size, check->assumptions.data);
+  ivector_pop(&check->assumptions);
+
+  return result == YICES_STATUS_UNSAT;
+}
+
+static void mccormick_refine_branch_phase(mccormick_check_t* check, mccormick_branch_t* branch, term_t split_atom) {
+  bool leq_unsat;
+
+  leq_unsat = mccormick_relaxation_side_unsat(check, split_atom);
+  if (leq_unsat) {
+    branch->prefer_leq = false;
+    (*check->mc->stats.tighten_hints) ++;
+    return;
+  }
+
+  if (mccormick_relaxation_side_unsat(check, opposite_term(split_atom))) {
+    branch->prefer_leq = true;
+    (*check->mc->stats.tighten_hints) ++;
+  }
+}
+
+static void mccormick_enqueue_gap_branch(mccormick_check_t* check, mccormick_branch_t* branch) {
   mccormick_t* mc;
-  model_t* model;
+  const mcsat_trail_t* trail;
+  term_t split_value_term, split_atom;
+  variable_t split_var;
+  lp_rational_t rat_value;
+  lp_value_t lp_value;
+  mcsat_value_t value;
+
+  mc = check->mc;
+  trail = mc->na->ctx->trail;
+
+  if (mc->last_branch_trail_size == trail_size(trail) &&
+      mc->last_branch_decision_level == trail->decision_level) {
+    return;
+  }
+
+  split_value_term = mccormick_rational_term(mc, &branch->split_value);
+  split_atom = mk_arith_leq(mc->na->ctx->tm, branch->split_term, split_value_term);
+  split_var = variable_db_get_variable_if_exists(mc->na->ctx->var_db, branch->split_term);
+  if (split_var == variable_null || trail_has_value(trail, split_var)) {
+    return;
+  }
+
+  mccormick_refine_branch_phase(check, branch, split_atom);
+
+  lp_rational_construct(&rat_value);
+  q_get_mpq(&branch->decision_value, &rat_value);
+  lp_value_construct(&lp_value, LP_VALUE_RATIONAL, &rat_value);
+  mcsat_value_construct_lp_value(&value, &lp_value);
+
+  mc->na->ctx->hint_next_decision(mc->na->ctx, split_var);
+  mc->na->ctx->bump_variable_n(mc->na->ctx, split_var, 4);
+  mc->na->ctx->hint_value(mc->na->ctx, split_var, &value);
+  (*mc->stats.gap_branches) ++;
+
+  mcsat_value_destruct(&value);
+  lp_value_destruct(&lp_value);
+  lp_rational_destruct(&rat_value);
+
+  mc->last_branch_trail_size = trail_size(trail);
+  mc->last_branch_decision_level = trail->decision_level;
+
+  if (ctx_trace_enabled(mc->na->ctx, "mcsat::na::mccormick")) {
+    ctx_trace_printf(mc->na->ctx, "mccormick gap branch on ");
+    ctx_trace_term(mc->na->ctx, branch->split_term);
+    ctx_trace_printf(mc->na->ctx, branch->prefer_leq ? " <= " : " > ");
+    ctx_trace_term(mc->na->ctx, split_value_term);
+    ctx_trace_printf(mc->na->ctx, "\n");
+  }
+}
+
+static void mccormick_gap_branch_from_model(mccormick_check_t* check, model_t* model) {
+  mccormick_branch_t branch;
+
+  if (mccormick_select_gap_branch(check, model, &branch)) {
+    mccormick_enqueue_gap_branch(check, &branch);
+    q_clear(&branch.decision_value);
+    q_clear(&branch.split_value);
+    q_clear(&branch.gap);
+  }
+}
+
+static void mccormick_hint_from_model(mccormick_check_t* check, model_t* model) {
+  mccormick_t* mc;
   term_table_t* terms;
   const mcsat_trail_t* trail;
   variable_db_t* var_db;
@@ -759,11 +1050,6 @@ static void mccormick_hint_from_model(mccormick_check_t* check) {
   terms = mc->na->ctx->terms;
   trail = mc->na->ctx->trail;
   var_db = mc->na->ctx->var_db;
-
-  model = _o_yices_get_model(check->ctx, true);
-  if (model == NULL) {
-    return;
-  }
 
   for (i = 0; i < check->active_products.size; ++ i) {
     term_t factors[2];
@@ -806,8 +1092,6 @@ static void mccormick_hint_from_model(mccormick_check_t* check) {
       mpq_clear(q);
     }
   }
-
-  _o_yices_free_model(model);
 }
 
 void mccormick_construct(mccormick_t* mc, na_plugin_t* na) {
@@ -819,6 +1103,8 @@ void mccormick_construct(mccormick_t* mc, na_plugin_t* na) {
   mc->checked_decision_level = MCCORMICK_NO_CHECK;
   mc->last_lra_check_trail_size = MCCORMICK_NO_CHECK;
   mc->last_lra_check_decision_level = MCCORMICK_NO_CHECK;
+  mc->last_branch_trail_size = MCCORMICK_NO_CHECK;
+  mc->last_branch_decision_level = MCCORMICK_NO_CHECK;
   init_rba_buffer(&mc->buffer, na->ctx->terms->pprods);
 
   mc->stats.products = statistics_new_int(na->ctx->stats, "mcsat::na::mccormick::products");
@@ -828,6 +1114,10 @@ void mccormick_construct(mccormick_t* mc, na_plugin_t* na) {
   mc->stats.hints = statistics_new_int(na->ctx->stats, "mcsat::na::mccormick::hints");
   mc->stats.skipped_no_envelopes = statistics_new_int(na->ctx->stats, "mcsat::na::mccormick::skipped_no_envelopes");
   mc->stats.skipped_throttled = statistics_new_int(na->ctx->stats, "mcsat::na::mccormick::skipped_throttled");
+  mc->stats.conflicts_suppressed = statistics_new_int(na->ctx->stats, "mcsat::na::mccormick::conflicts_suppressed");
+  mc->stats.gap_branches = statistics_new_int(na->ctx->stats, "mcsat::na::mccormick::gap_branches");
+  mc->stats.tighten_checks = statistics_new_int(na->ctx->stats, "mcsat::na::mccormick::tighten_checks");
+  mc->stats.tighten_hints = statistics_new_int(na->ctx->stats, "mcsat::na::mccormick::tighten_hints");
 }
 
 void mccormick_destruct(mccormick_t* mc) {
@@ -882,6 +1172,8 @@ void mccormick_push(mccormick_t* mc) {
   mc->checked_decision_level = MCCORMICK_NO_CHECK;
   mc->last_lra_check_trail_size = MCCORMICK_NO_CHECK;
   mc->last_lra_check_decision_level = MCCORMICK_NO_CHECK;
+  mc->last_branch_trail_size = MCCORMICK_NO_CHECK;
+  mc->last_branch_decision_level = MCCORMICK_NO_CHECK;
 }
 
 void mccormick_pop(mccormick_t* mc) {
@@ -890,6 +1182,8 @@ void mccormick_pop(mccormick_t* mc) {
   mc->checked_decision_level = MCCORMICK_NO_CHECK;
   mc->last_lra_check_trail_size = MCCORMICK_NO_CHECK;
   mc->last_lra_check_decision_level = MCCORMICK_NO_CHECK;
+  mc->last_branch_trail_size = MCCORMICK_NO_CHECK;
+  mc->last_branch_decision_level = MCCORMICK_NO_CHECK;
 }
 
 void mccormick_event_notify(mccormick_t* mc) {
@@ -898,6 +1192,8 @@ void mccormick_event_notify(mccormick_t* mc) {
   mc->checked_decision_level = MCCORMICK_NO_CHECK;
   mc->last_lra_check_trail_size = MCCORMICK_NO_CHECK;
   mc->last_lra_check_decision_level = MCCORMICK_NO_CHECK;
+  mc->last_branch_trail_size = MCCORMICK_NO_CHECK;
+  mc->last_branch_decision_level = MCCORMICK_NO_CHECK;
 }
 
 bool mccormick_check(mccormick_t* mc, trail_token_t* prop) {
@@ -969,20 +1265,28 @@ bool mccormick_check(mccormick_t* mc, trail_token_t* prop) {
 
     if (mc->conflict.size > 0) {
       if (ctx_trace_enabled(mc->na->ctx, "mcsat::na::mccormick")) {
-        ctx_trace_printf(mc->na->ctx, "mccormick conflict:\n");
+        ctx_trace_printf(mc->na->ctx, "mccormick conflict suppressed pending proof audit:\n");
         for (i = 0; i < mc->conflict.size; ++ i) {
           ctx_trace_term(mc->na->ctx, mc->conflict.data[i]);
         }
       }
-      prop->conflict(prop);
-      (*mc->stats.conflicts) ++;
-      mccormick_check_destruct(&check);
-      return true;
+      ivector_reset(&mc->conflict);
+      (*mc->stats.conflicts_suppressed) ++;
     }
-  } else if (result == YICES_STATUS_SAT && mc->na->ctx->options->na_mccormick_hints) {
-    mccormick_hint_from_model(&check);
+  } else if (result == YICES_STATUS_SAT) {
+    model_t* model;
+
+    model = _o_yices_get_model(check.ctx, true);
+    if (model != NULL) {
+      if (mc->na->ctx->options->na_mccormick_hints) {
+        mccormick_hint_from_model(&check, model);
+      }
+      mccormick_gap_branch_from_model(&check, model);
+      _o_yices_free_model(model);
+    }
   }
 
+  (void) prop;
   mccormick_check_destruct(&check);
   return false;
 }

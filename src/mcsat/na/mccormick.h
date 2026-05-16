@@ -35,10 +35,11 @@ typedef struct na_plugin_s na_plugin_t;
 /*
  * Experimental McCormick relaxation owned by the nonlinear-arithmetic plugin.
  *
- * The component is an abstraction oracle: it may report a conflict when a
- * guarded linear McCormick relaxation is infeasible, but all conflict literals
- * are original trail literals and exact libpoly/NRA reasoning remains the
- * authority for models, roots, and nonlinear explanations.
+ * The component is an abstraction oracle.  Relaxation conflicts are currently
+ * suppressed pending a proof audit, so the active path uses feasible
+ * relaxations for gap-guided branching only.  Exact libpoly/NRA reasoning
+ * remains the authority for conflicts, models, roots, and nonlinear
+ * explanations.
  */
 typedef struct mccormick_s {
   na_plugin_t* na;
@@ -60,6 +61,10 @@ typedef struct mccormick_s {
   uint32_t last_lra_check_trail_size;
   uint32_t last_lra_check_decision_level;
 
+  /** Last trail state where a gap-guided branch hint was emitted. */
+  uint32_t last_branch_trail_size;
+  uint32_t last_branch_decision_level;
+
   /** Local arithmetic buffer for generated linear atoms. */
   rba_buffer_t buffer;
 
@@ -71,6 +76,10 @@ typedef struct mccormick_s {
     statistic_int_t* hints;
     statistic_int_t* skipped_no_envelopes;
     statistic_int_t* skipped_throttled;
+    statistic_int_t* conflicts_suppressed;
+    statistic_int_t* gap_branches;
+    statistic_int_t* tighten_checks;
+    statistic_int_t* tighten_hints;
   } stats;
 } mccormick_t;
 

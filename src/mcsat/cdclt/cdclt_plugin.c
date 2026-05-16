@@ -146,20 +146,6 @@ void cdclt_plugin_destruct(plugin_t* plugin) {
   delete_ivector(&cdclt->assump);
 }
 
-static
-bool cdclt_plugin_arith_atom_is_linear(term_table_t* terms, term_t t) {
-  switch (term_kind(terms, t)) {
-  case ARITH_EQ_ATOM:
-  case ARITH_GE_ATOM:
-    return term_degree(terms, arith_atom_arg(terms, t)) <= 1;
-  case ARITH_BINEQ_ATOM:
-    return term_degree(terms, composite_term_arg(terms, t, 0)) <= 1 &&
-           term_degree(terms, composite_term_arg(terms, t, 1)) <= 1;
-  default:
-    return false;
-  }
-}
-
 /**
  * Process a new term
  */
@@ -203,18 +189,11 @@ void cdclt_plugin_new_term_notify(plugin_t* plugin, term_t t, trail_token_t* pro
     case ARITH_EQ_ATOM:
     case ARITH_GE_ATOM:
     case ARITH_BINEQ_ATOM:
-      if (!cdclt->ctx->options->na_mccormick || !cdclt_plugin_arith_atom_is_linear(terms, t)) {
-        break;
-      }
-      a = new_uninterpreted_term(terms, _o_yices_bool_type());
-      b = new_uninterpreted_term(terms, _o_yices_bool_type());
-      int_hmap_add(&cdclt->term2assump_map, t, a);
-      int_hmap_add(&cdclt->assump2term_map, a, t);
-      int_hmap_add(&cdclt->term2assump_map, _o_yices_not(t), b);
-      int_hmap_add(&cdclt->assump2term_map, b, _o_yices_not(t));
-      _o_yices_assert_formula(cdclt->cdclt_ctx, _o_yices_implies(a, t));
-      _o_yices_assert_formula(cdclt->cdclt_ctx, _o_yices_implies(b, _o_yices_not(t)));
-      cdclt->check_limit++;
+      /*
+       * Do not let the experimental McCormick path enable status-changing
+       * arithmetic CDCL(T) conflicts.  The relaxation now uses arithmetic
+       * atoms only as branch hints until the proof story is audited.
+       */
       break;
     case ARITH_IS_INT_ATOM:
       break;
