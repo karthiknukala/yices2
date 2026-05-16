@@ -43,6 +43,9 @@ typedef struct na_plugin_s na_plugin_t;
 typedef struct mccormick_s {
   na_plugin_t* na;
 
+  /** Reused internal LRA context for relaxation checks. */
+  context_t* relax_ctx;
+
   /** Products seen during NA term registration. */
   int_hset_t registered_products;
 
@@ -53,6 +56,10 @@ typedef struct mccormick_s {
   uint32_t checked_trail_size;
   uint32_t checked_decision_level;
 
+  /** Last trail state that reached the internal LRA solver. */
+  uint32_t last_lra_check_trail_size;
+  uint32_t last_lra_check_decision_level;
+
   /** Local arithmetic buffer for generated linear atoms. */
   rba_buffer_t buffer;
 
@@ -62,6 +69,8 @@ typedef struct mccormick_s {
     statistic_int_t* conflicts;
     statistic_int_t* envelopes;
     statistic_int_t* hints;
+    statistic_int_t* skipped_no_envelopes;
+    statistic_int_t* skipped_throttled;
   } stats;
 } mccormick_t;
 

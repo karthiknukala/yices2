@@ -1702,11 +1702,19 @@ static const help_record_t help_data[] = {
     "as an internal nonlinear-arithmetic relaxation.\n",
     NULL },
 
-  // END MARKER: index 172
+  // mcsat-na-mccormick-hints: index 173
+  { HPARAM,
+    "(set-param mcsat-na-mccormick-hints [boolean])",
+    "Enable McCormick relaxation decision hints in MC-SAT",
+    "If this parameter is true, feasible McCormick relaxations may enqueue\n"
+    "arithmetic decision and value hints. The default is false.\n",
+    NULL },
+
+  // END MARKER: index 173
   { HMISC, NULL, NULL, NULL, NULL },
 };
 
-#define END_HELP_DATA 173
+#define END_HELP_DATA 174
 
 
 
@@ -2172,6 +2180,7 @@ static const help_index_t help_index[] = {
   { "mcsat-na-bound-max", NULL, 158, help_basic },
   { "mcsat-na-bound-min", NULL, 157, help_basic },
   { "mcsat-na-mccormick", NULL, 172, help_basic },
+  { "mcsat-na-mccormick-hints", NULL, 173, help_basic },
   { "mcsat-na-mgcd", NULL, 154, help_basic },
   { "mcsat-na-nlsat", NULL, 155, help_basic },
   { "mcsat-partial-restart", NULL, 160, help_basic },

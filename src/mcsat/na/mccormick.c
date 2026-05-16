@@ -37,6 +37,12 @@
 #include "yices.h"
 
 #define MCCORMICK_NO_CHECK UINT32_MAX
+#define MCCORMICK_SMALL_PRODUCT_LIMIT 4
+#define MCCORMICK_MEDIUM_PRODUCT_LIMIT 32
+#define MCCORMICK_MEDIUM_TRAIL_DELTA 4
+#define MCCORMICK_MEDIUM_LEVEL_DELTA 2
+#define MCCORMICK_LARGE_TRAIL_DELTA 8
+#define MCCORMICK_LARGE_LEVEL_DELTA 4
 
 typedef enum {
   MCCORMICK_BOUND_LOWER,
@@ -68,17 +74,25 @@ typedef struct {
   mccormick_bound_t* bounds;
   uint32_t bounds_size;
   uint32_t bounds_capacity;
+  uint32_t envelope_count;
 } mccormick_check_t;
 
-static void mccormick_check_construct(mccormick_check_t* check, mccormick_t* mc) {
+static context_t* mccormick_new_context(void) {
   ctx_config_t* config;
-
-  check->mc = mc;
+  context_t* ctx;
 
   config = yices_new_config();
   yices_set_config(config, "mode", "multi-checks");
-  check->ctx = _o_yices_new_context(config);
+  ctx = _o_yices_new_context(config);
   yices_free_config(config);
+
+  return ctx;
+}
+
+static void mccormick_check_construct(mccormick_check_t* check, mccormick_t* mc) {
+  check->mc = mc;
+  check->ctx = mc->relax_ctx;
+  reset_context(check->ctx);
 
   init_int_hmap(&check->product_to_lift, 0);
   init_int_hmap(&check->assumption_to_literal, 0);
@@ -89,6 +103,7 @@ static void mccormick_check_construct(mccormick_check_t* check, mccormick_t* mc)
   check->bounds = NULL;
   check->bounds_size = 0;
   check->bounds_capacity = 0;
+  check->envelope_count = 0;
 }
 
 static void mccormick_bound_destruct(mccormick_bound_t* bound) {
@@ -113,8 +128,6 @@ static void mccormick_check_destruct(mccormick_check_t* check) {
   delete_ivector(&check->assumptions);
   delete_int_hmap(&check->assumption_to_literal);
   delete_int_hmap(&check->product_to_lift);
-
-  _o_yices_free_context(check->ctx);
 }
 
 static bool mccormick_is_degree2_product(term_table_t* terms, term_t product, term_t* x, term_t* y) {
@@ -606,6 +619,7 @@ static void mccormick_assert_guarded_envelope(mccormick_check_t* check, term_t g
 
   guard = _o_yices_and(4, guards);
   _o_yices_assert_formula(check->ctx, _o_yices_implies(guard, envelope));
+  check->envelope_count ++;
   (*check->mc->stats.envelopes) ++;
 }
 
@@ -708,6 +722,31 @@ static void mccormick_add_envelopes(mccormick_check_t* check) {
   }
 }
 
+static bool mccormick_should_throttle(const mccormick_t* mc, const mcsat_trail_t* trail, uint32_t active_products) {
+  uint32_t trail_delta;
+  uint32_t level_delta;
+
+  if (active_products <= MCCORMICK_SMALL_PRODUCT_LIMIT ||
+      mc->last_lra_check_trail_size == MCCORMICK_NO_CHECK) {
+    return false;
+  }
+
+  trail_delta = trail_size(trail) > mc->last_lra_check_trail_size
+      ? trail_size(trail) - mc->last_lra_check_trail_size
+      : 0;
+  level_delta = trail->decision_level > mc->last_lra_check_decision_level
+      ? trail->decision_level - mc->last_lra_check_decision_level
+      : 0;
+
+  if (active_products <= MCCORMICK_MEDIUM_PRODUCT_LIMIT) {
+    return trail_delta < MCCORMICK_MEDIUM_TRAIL_DELTA &&
+           level_delta < MCCORMICK_MEDIUM_LEVEL_DELTA;
+  }
+
+  return trail_delta < MCCORMICK_LARGE_TRAIL_DELTA &&
+         level_delta < MCCORMICK_LARGE_LEVEL_DELTA;
+}
+
 static void mccormick_hint_from_model(mccormick_check_t* check) {
   mccormick_t* mc;
   model_t* model;
@@ -773,10 +812,13 @@ static void mccormick_hint_from_model(mccormick_check_t* check) {
 
 void mccormick_construct(mccormick_t* mc, na_plugin_t* na) {
   mc->na = na;
+  mc->relax_ctx = mccormick_new_context();
   init_int_hset(&mc->registered_products, 0);
   init_ivector(&mc->conflict, 0);
   mc->checked_trail_size = MCCORMICK_NO_CHECK;
   mc->checked_decision_level = MCCORMICK_NO_CHECK;
+  mc->last_lra_check_trail_size = MCCORMICK_NO_CHECK;
+  mc->last_lra_check_decision_level = MCCORMICK_NO_CHECK;
   init_rba_buffer(&mc->buffer, na->ctx->terms->pprods);
 
   mc->stats.products = statistics_new_int(na->ctx->stats, "mcsat::na::mccormick::products");
@@ -784,9 +826,12 @@ void mccormick_construct(mccormick_t* mc, na_plugin_t* na) {
   mc->stats.conflicts = statistics_new_int(na->ctx->stats, "mcsat::na::mccormick::conflicts");
   mc->stats.envelopes = statistics_new_int(na->ctx->stats, "mcsat::na::mccormick::envelopes");
   mc->stats.hints = statistics_new_int(na->ctx->stats, "mcsat::na::mccormick::hints");
+  mc->stats.skipped_no_envelopes = statistics_new_int(na->ctx->stats, "mcsat::na::mccormick::skipped_no_envelopes");
+  mc->stats.skipped_throttled = statistics_new_int(na->ctx->stats, "mcsat::na::mccormick::skipped_throttled");
 }
 
 void mccormick_destruct(mccormick_t* mc) {
+  _o_yices_free_context(mc->relax_ctx);
   delete_rba_buffer(&mc->buffer);
   delete_ivector(&mc->conflict);
   delete_int_hset(&mc->registered_products);
@@ -797,14 +842,25 @@ void mccormick_register_term(mccormick_t* mc, term_t t) {
   term_kind_t kind;
   uint32_t i;
 
-  if (!mc->na->ctx->options->na_mccormick || !is_pos_term(t)) {
+  if (!is_pos_term(t)) {
     return;
   }
 
   terms = mc->na->ctx->terms;
   kind = term_kind(terms, t);
 
-  if (kind == POWER_PRODUCT) {
+  if (kind == ARITH_GE_ATOM || kind == ARITH_EQ_ATOM) {
+    mccormick_register_term(mc, arith_atom_arg(terms, t));
+  } else if (kind == ARITH_BINEQ_ATOM || kind == EQ_TERM) {
+    term_t lhs = composite_term_arg(terms, t, 0);
+    term_t rhs = composite_term_arg(terms, t, 1);
+    if (is_arithmetic_term(terms, lhs)) {
+      mccormick_register_term(mc, lhs);
+    }
+    if (is_arithmetic_term(terms, rhs)) {
+      mccormick_register_term(mc, rhs);
+    }
+  } else if (kind == POWER_PRODUCT) {
     if (mccormick_product_supported(terms, t) && int_hset_add(&mc->registered_products, (uint32_t) t)) {
       (*mc->stats.products) ++;
     }
@@ -824,18 +880,24 @@ void mccormick_register_term(mccormick_t* mc, term_t t) {
 void mccormick_push(mccormick_t* mc) {
   mc->checked_trail_size = MCCORMICK_NO_CHECK;
   mc->checked_decision_level = MCCORMICK_NO_CHECK;
+  mc->last_lra_check_trail_size = MCCORMICK_NO_CHECK;
+  mc->last_lra_check_decision_level = MCCORMICK_NO_CHECK;
 }
 
 void mccormick_pop(mccormick_t* mc) {
   ivector_reset(&mc->conflict);
   mc->checked_trail_size = MCCORMICK_NO_CHECK;
   mc->checked_decision_level = MCCORMICK_NO_CHECK;
+  mc->last_lra_check_trail_size = MCCORMICK_NO_CHECK;
+  mc->last_lra_check_decision_level = MCCORMICK_NO_CHECK;
 }
 
 void mccormick_event_notify(mccormick_t* mc) {
   ivector_reset(&mc->conflict);
   mc->checked_trail_size = MCCORMICK_NO_CHECK;
   mc->checked_decision_level = MCCORMICK_NO_CHECK;
+  mc->last_lra_check_trail_size = MCCORMICK_NO_CHECK;
+  mc->last_lra_check_decision_level = MCCORMICK_NO_CHECK;
 }
 
 bool mccormick_check(mccormick_t* mc, trail_token_t* prop) {
@@ -843,7 +905,7 @@ bool mccormick_check(mccormick_t* mc, trail_token_t* prop) {
   mccormick_check_t check;
   smt_status_t result;
 
-  if (!mc->na->ctx->options->na_mccormick || mc->registered_products.nelems == 0) {
+  if (!mc->na->ctx->options->na_mccormick || mc->registered_products.nelems == 0 || mc->relax_ctx == NULL) {
     return false;
   }
 
@@ -868,12 +930,29 @@ bool mccormick_check(mccormick_t* mc, trail_token_t* prop) {
   }
 
   mccormick_add_envelopes(&check);
+  if (check.envelope_count == 0) {
+    mc->checked_trail_size = trail_size(trail);
+    mc->checked_decision_level = trail->decision_level;
+    (*mc->stats.skipped_no_envelopes) ++;
+    mccormick_check_destruct(&check);
+    return false;
+  }
+
+  if (mccormick_should_throttle(mc, trail, check.active_products.size)) {
+    mc->checked_trail_size = trail_size(trail);
+    mc->checked_decision_level = trail->decision_level;
+    (*mc->stats.skipped_throttled) ++;
+    mccormick_check_destruct(&check);
+    return false;
+  }
 
   (*mc->stats.checks) ++;
   result = _o_yices_check_context_with_assumptions(check.ctx, NULL, check.assumptions.size, check.assumptions.data);
 
   mc->checked_trail_size = trail_size(trail);
   mc->checked_decision_level = trail->decision_level;
+  mc->last_lra_check_trail_size = trail_size(trail);
+  mc->last_lra_check_decision_level = trail->decision_level;
 
   if (result == YICES_STATUS_UNSAT) {
     uint32_t i;
@@ -900,7 +979,7 @@ bool mccormick_check(mccormick_t* mc, trail_token_t* prop) {
       mccormick_check_destruct(&check);
       return true;
     }
-  } else if (result == YICES_STATUS_SAT) {
+  } else if (result == YICES_STATUS_SAT && mc->na->ctx->options->na_mccormick_hints) {
     mccormick_hint_from_model(&check);
   }
 

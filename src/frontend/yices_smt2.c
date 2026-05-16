@@ -115,6 +115,7 @@ static bool mcsat_na_mgcd;
 static bool mcsat_na_nlsat;
 static bool mcsat_na_bound;
 static bool mcsat_na_mccormick;
+static bool mcsat_na_mccormick_hints;
 static int32_t mcsat_na_bound_min;
 static int32_t mcsat_na_bound_max;
 static int32_t mcsat_bv_var_size;
@@ -173,6 +174,7 @@ typedef enum optid {
   mcsat_na_nlsat_opt,     // use the nlsat projection instead of brown single-cell
   mcsat_na_bound_opt,     // search by increasing bound
   mcsat_na_mccormick_opt, // use experimental McCormick relaxation
+  mcsat_na_mccormick_hints_opt, // enable McCormick relaxation decision hints
   mcsat_na_bound_min_opt, // set initial bound
   mcsat_na_bound_max_opt, // set maximal bound
   mcsat_bv_var_size_opt,   // set size of bitvector variables
@@ -226,6 +228,7 @@ static option_desc_t options[NUM_OPTIONS] = {
   { "mcsat-na-nlsat", '\0', FLAG_OPTION, mcsat_na_nlsat_opt },
   { "mcsat-na-bound", '\0', FLAG_OPTION, mcsat_na_bound_opt },
   { "mcsat-na-mccormick", '\0', FLAG_OPTION, mcsat_na_mccormick_opt },
+  { "mcsat-na-mccormick-hints", '\0', FLAG_OPTION, mcsat_na_mccormick_hints_opt },
   { "mcsat-na-bound-min", '\0', MANDATORY_INT, mcsat_na_bound_min_opt },
   { "mcsat-na-bound-max", '\0', MANDATORY_INT, mcsat_na_bound_max_opt },
   { "mcsat-bv-var-size", '\0', MANDATORY_INT, mcsat_bv_var_size_opt },
@@ -308,6 +311,7 @@ static void print_mcsat_help(const char *progname) {
          "    --mcsat-na-nlsat         Use NLSAT projection instead of Brown's single-cell construction\n"
          "    --mcsat-na-bound         Search by increasing the bound on variable magnitude\n"
          "    --mcsat-na-mccormick     Enable experimental McCormick relaxation\n"
+         "    --mcsat-na-mccormick-hints Enable McCormick relaxation decision hints\n"
          "    --mcsat-na-bound-min=<B> Set initial lower bound\n"
          "    --mcsat-na-bound-max=<B> Set maximal bound for search\n"
          "    --mcsat-bv-var-size=<B>   Set size of bit-vector variables in MCSAT search\n"
@@ -411,6 +415,7 @@ static void parse_command_line(int argc, char *argv[]) {
   mcsat_na_nlsat = false;
   mcsat_na_bound = false;
   mcsat_na_mccormick = false;
+  mcsat_na_mccormick_hints = false;
   mcsat_na_bound_min = -1;
   mcsat_na_bound_max = -1;
   mcsat_bv_var_size = -1;
@@ -596,6 +601,11 @@ static void parse_command_line(int argc, char *argv[]) {
       case mcsat_na_mccormick_opt:
         if (! yices_has_mcsat()) goto no_mcsat;
         mcsat_na_mccormick = true;
+        break;
+
+      case mcsat_na_mccormick_hints_opt:
+        if (! yices_has_mcsat()) goto no_mcsat;
+        mcsat_na_mccormick_hints = true;
         break;
 
       case mcsat_na_bound_min_opt:
@@ -820,6 +830,10 @@ static void setup_options_mcsat(void) {
 
   if (mcsat_na_mccormick) {
     smt2_set_option(":yices-mcsat-na-mccormick", aval_true);
+  }
+
+  if (mcsat_na_mccormick_hints) {
+    smt2_set_option(":yices-mcsat-na-mccormick-hints", aval_true);
   }
 
   if (mcsat_na_bound_min >= 0) {

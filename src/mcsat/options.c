@@ -25,6 +25,7 @@ extern void init_mcsat_options(mcsat_options_t *opts) {
   opts->na_mgcd = false;
   opts->na_bound = false;
   opts->na_mccormick = false;
+  opts->na_mccormick_hints = false;
   opts->na_bound_min = -1;
   opts->na_bound_max = -1;
   opts->bv_var_size = -1;

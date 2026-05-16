@@ -5461,6 +5461,10 @@ static bool yices_get_option(smt2_globals_t *g, yices_param_t p) {
     print_boolean_value(g->mcsat_options.na_mccormick);
     break;
 
+  case PARAM_MCSAT_NA_MCCORMICK_HINTS:
+    print_boolean_value(g->mcsat_options.na_mccormick_hints);
+    break;
+
   case PARAM_MCSAT_NA_MGCD:
     print_boolean_value(g->mcsat_options.na_mgcd);
     break;
@@ -6267,6 +6271,16 @@ static void yices_set_option(smt2_globals_t *g, const char *param, const param_v
       context = g->ctx;
       if (context != NULL) {
         context->mcsat_options.na_mccormick = tt;
+      }
+    }
+    break;
+
+  case PARAM_MCSAT_NA_MCCORMICK_HINTS:
+    if (param_val_to_bool(param, val, &tt, &reason)) {
+      g->mcsat_options.na_mccormick_hints = tt;
+      context = g->ctx;
+      if (context != NULL) {
+        context->mcsat_options.na_mccormick_hints = tt;
       }
     }
     break;
