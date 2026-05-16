@@ -1694,11 +1694,19 @@ static const help_record_t help_data[] = {
     "whose values matter for satisfying the assertions.\n",
     NULL, },
 
-  // END MARKER: index 171
+  // mcsat-na-mccormick: index 172
+  { HPARAM,
+    "(set-param mcsat-na-mccormick [boolean])",
+    "Enable experimental McCormick relaxation in MC-SAT",
+    "If this parameter is true, MC-SAT uses guarded McCormick envelopes\n"
+    "as an internal nonlinear-arithmetic relaxation.\n",
+    NULL },
+
+  // END MARKER: index 172
   { HMISC, NULL, NULL, NULL, NULL },
 };
 
-#define END_HELP_DATA 172
+#define END_HELP_DATA 173
 
 
 
@@ -2163,6 +2171,7 @@ static const help_index_t help_index[] = {
   { "mcsat-na-bound", NULL, 156, help_basic },
   { "mcsat-na-bound-max", NULL, 158, help_basic },
   { "mcsat-na-bound-min", NULL, 157, help_basic },
+  { "mcsat-na-mccormick", NULL, 172, help_basic },
   { "mcsat-na-mgcd", NULL, 154, help_basic },
   { "mcsat-na-nlsat", NULL, 155, help_basic },
   { "mcsat-partial-restart", NULL, 160, help_basic },

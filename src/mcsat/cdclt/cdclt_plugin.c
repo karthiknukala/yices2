@@ -99,6 +99,7 @@ void cdclt_plugin_construct(plugin_t* plugin, plugin_context_t* ctx) {
   ctx_config_t* config = yices_new_config();
   yices_set_config(config, "mode", "multi-checks");
   cdclt->cdclt_ctx = _o_yices_new_context(config);
+  yices_free_config(config);
 
   init_int_hmap(&cdclt->term2assump_map, 0);
   init_int_hmap(&cdclt->assump2term_map, 0);
@@ -117,10 +118,10 @@ void cdclt_plugin_construct(plugin_t* plugin, plugin_context_t* ctx) {
   //ctx->request_term_notification_by_kind(ctx, BV_GE_ATOM, false);
   //ctx->request_term_notification_by_kind(ctx, BV_SGE_ATOM, false);
 
-  //ctx->request_term_notification_by_kind(ctx, ARITH_EQ_ATOM, false);
-  //ctx->request_term_notification_by_kind(ctx, ARITH_GE_ATOM, false);
-  //ctx->request_term_notification_by_kind(ctx, ARITH_IS_INT_ATOM, false);
-  //ctx->request_term_notification_by_kind(ctx, ARITH_BINEQ_ATOM, false);
+  ctx->request_term_notification_by_kind(ctx, ARITH_EQ_ATOM, false);
+  ctx->request_term_notification_by_kind(ctx, ARITH_GE_ATOM, false);
+  ctx->request_term_notification_by_kind(ctx, ARITH_IS_INT_ATOM, false);
+  ctx->request_term_notification_by_kind(ctx, ARITH_BINEQ_ATOM, false);
   
   // Initialize statistics
   cdclt_plugin_stats_init(cdclt);
@@ -143,6 +144,20 @@ void cdclt_plugin_destruct(plugin_t* plugin) {
 
   delete_ivector(&cdclt->conflict);
   delete_ivector(&cdclt->assump);
+}
+
+static
+bool cdclt_plugin_arith_atom_is_linear(term_table_t* terms, term_t t) {
+  switch (term_kind(terms, t)) {
+  case ARITH_EQ_ATOM:
+  case ARITH_GE_ATOM:
+    return term_degree(terms, arith_atom_arg(terms, t)) <= 1;
+  case ARITH_BINEQ_ATOM:
+    return term_degree(terms, composite_term_arg(terms, t, 0)) <= 1 &&
+           term_degree(terms, composite_term_arg(terms, t, 1)) <= 1;
+  default:
+    return false;
+  }
 }
 
 /**
@@ -187,9 +202,21 @@ void cdclt_plugin_new_term_notify(plugin_t* plugin, term_t t, trail_token_t* pro
       break;
     case ARITH_EQ_ATOM:
     case ARITH_GE_ATOM:
-    case ARITH_IS_INT_ATOM:
     case ARITH_BINEQ_ATOM:
-      // Do not handle arithmetic terms at the moment
+      if (!cdclt->ctx->options->na_mccormick || !cdclt_plugin_arith_atom_is_linear(terms, t)) {
+        break;
+      }
+      a = new_uninterpreted_term(terms, _o_yices_bool_type());
+      b = new_uninterpreted_term(terms, _o_yices_bool_type());
+      int_hmap_add(&cdclt->term2assump_map, t, a);
+      int_hmap_add(&cdclt->assump2term_map, a, t);
+      int_hmap_add(&cdclt->term2assump_map, _o_yices_not(t), b);
+      int_hmap_add(&cdclt->assump2term_map, b, _o_yices_not(t));
+      _o_yices_assert_formula(cdclt->cdclt_ctx, _o_yices_implies(a, t));
+      _o_yices_assert_formula(cdclt->cdclt_ctx, _o_yices_implies(b, _o_yices_not(t)));
+      cdclt->check_limit++;
+      break;
+    case ARITH_IS_INT_ATOM:
       break;
     default:
       assert(false);
@@ -241,7 +268,7 @@ void cdclt_plugin_propagate(plugin_t* plugin, trail_token_t* prop) {
     smt_status_t result = _o_yices_check_context_with_assumptions(cdclt->cdclt_ctx, NULL, cdclt->assump.size, cdclt->assump.data);
     (*cdclt->stats.checks) ++;
 
-    if (result == STATUS_UNSAT) {
+    if (result == YICES_STATUS_UNSAT) {
       context_build_unsat_core(cdclt->cdclt_ctx, &cdclt->conflict);
 
       for (uint32_t i = 0; i < cdclt->conflict.size; ++i) {
@@ -347,4 +374,4 @@ plugin_t* cdclt_plugin_allocator(void) {
   plugin->plugin_interface.set_exception_handler = cdclt_plugin_set_exception_handler;
 
   return (plugin_t*) plugin;
-} 
+}

@@ -281,6 +281,7 @@ enum {
   mcsat_na_mgcd_flag,
   mcsat_na_nlsat_flag,
   mcsat_na_bound_flag,
+  mcsat_na_mccormick_flag,
   mcsat_na_bound_min_option,
   mcsat_na_bound_max_option,
   mcsat_bv_var_size_option,
@@ -305,6 +306,7 @@ static option_desc_t options[NUM_OPTIONS] = {
   { "mcsat-na-mgcd", '\0', FLAG_OPTION, mcsat_na_mgcd_flag },
   { "mcsat-na-nlsat", '\0', FLAG_OPTION, mcsat_na_nlsat_flag },
   { "mcsat-na-bound", '\0', FLAG_OPTION, mcsat_na_bound_flag },
+  { "mcsat-na-mccormick", '\0', FLAG_OPTION, mcsat_na_mccormick_flag },
   { "mcsat-na-bound-min", '\0', MANDATORY_INT, mcsat_na_bound_min_option },
   { "mcsat-na-bound-max", '\0', MANDATORY_INT, mcsat_na_bound_max_option },
   { "mcsat-bv-var-size", '\0', MANDATORY_INT, mcsat_bv_var_size_option },
@@ -387,6 +389,7 @@ static void print_mcsat_help(char *progname) {
          "  --mcsat-na-mgcd          Use model-based GCD instead of PSC for projection\n"
          "  --mcsat-na-nlsat         Use NLSAT projection instead of Brown single-cell\n"
          "  --mcsat-na-bound         Search by increasing the bound on variable magnitude\n"
+         "  --mcsat-na-mccormick     Enable experimental McCormick relaxation\n"
          "  --mcsat-na-bound-min=<N> Set the initial search bound\n"
          "  --mcsat-na-bound-max=<N> Set the maximal search bound\n"
          "  --mcsat-bv-var-size=<N>  Set bit-vector variable size in MC-SAT search\n"
@@ -567,6 +570,11 @@ static void process_command_line(int argc, char *argv[]) {
       case mcsat_na_bound_flag:
         if (! yices_has_mcsat()) goto no_mcsat;
         mcsat_parameters.na_bound = true;
+        break;
+
+      case mcsat_na_mccormick_flag:
+        if (! yices_has_mcsat()) goto no_mcsat;
+        mcsat_parameters.na_mccormick = true;
         break;
 
       case mcsat_na_bound_min_option:
@@ -1647,6 +1655,10 @@ static void show_param(yices_param_t p, uint32_t n) {
     show_bool_param(param2string[p], mcsat_parameters.na_bound, n);
     break;
 
+  case PARAM_MCSAT_NA_MCCORMICK:
+    show_bool_param(param2string[p], mcsat_parameters.na_mccormick, n);
+    break;
+
   case PARAM_MCSAT_NA_BOUND_MIN:
     show_int32_param(param2string[p], mcsat_parameters.na_bound_min, n);
     break;
@@ -2264,6 +2276,16 @@ static void yices_setparam_cmd(const char *param, const param_val_t *val) {
       mcsat_parameters.na_bound = tt;
       if (context != NULL) {
         context->mcsat_options.na_bound = tt;
+      }
+      print_ok();
+    }
+    break;
+
+  case PARAM_MCSAT_NA_MCCORMICK:
+    if (param_val_to_bool(param, val, &tt, &reason)) {
+      mcsat_parameters.na_mccormick = tt;
+      if (context != NULL) {
+        context->mcsat_options.na_mccormick = tt;
       }
       print_ok();
     }

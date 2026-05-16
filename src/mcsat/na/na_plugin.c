@@ -117,6 +117,9 @@ void na_plugin_construct(plugin_t* plugin, plugin_context_t* ctx) {
   // libpoly init
   lp_data_init(&na->lp_data, NULL, na->ctx);
 
+  // McCormick relaxation
+  mccormick_construct(&na->mccormick, na);
+
   // Atoms
   ctx->request_term_notification_by_kind(ctx, ARITH_EQ_ATOM, false);
   ctx->request_term_notification_by_kind(ctx, ARITH_GE_ATOM, false);
@@ -182,6 +185,8 @@ void na_plugin_destruct(plugin_t* plugin) {
   poly_constraint_db_delete(na->constraint_db);
 
   feasible_set_db_delete(na->feasible_set_db);
+
+  mccormick_destruct(&na->mccormick);
 
   lp_data_destruct(&na->lp_data);
 
@@ -654,6 +659,8 @@ void na_plugin_new_term_notify(plugin_t* plugin, term_t t, trail_token_t* prop) 
     }
   }
 
+  mccormick_register_term(&na->mccormick, t);
+
   // Remove the variables vector
   int_mset_destruct(&t_variables);
 }
@@ -1077,6 +1084,10 @@ void na_plugin_propagate(plugin_t* plugin, trail_token_t* prop) {
   }
 
   na_plugin_report_pending_conflict(na, prop);
+
+  if (trail_is_consistent(trail)) {
+    mccormick_check(&na->mccormick, prop);
+  }
 
   assert(na_plugin_check_assignment(na));
 }
@@ -1712,6 +1723,8 @@ void na_plugin_get_conflict(plugin_t* plugin, ivector_t* conflict) {
     na_plugin_get_int_conflict(na, &pos, &neg, na->conflict_variable_int, conflict);
   } else if (na->conflict_variable_assumption != variable_null) {
     na_plugin_get_assumption_conflict(na, na->conflict_variable_assumption, conflict);
+  } else if (mccormick_has_conflict(&na->mccormick)) {
+    mccormick_get_conflict(&na->mccormick, conflict);
   }
 
   int_mset_destruct(&pos);
@@ -1794,6 +1807,7 @@ void na_plugin_push(plugin_t* plugin) {
 
   lp_data_variable_order_push(&na->lp_data);
   feasible_set_db_push(na->feasible_set_db);
+  mccormick_push(&na->mccormick);
 }
 
 static
@@ -1836,6 +1850,7 @@ void na_plugin_pop(plugin_t* plugin) {
 
   // Pop the feasibility
   feasible_set_db_pop(na->feasible_set_db);
+  mccormick_pop(&na->mccormick);
 
   // Unset the conflict
   na->conflict_variable = variable_null;
@@ -1894,20 +1909,23 @@ void na_plugin_gc_sweep(plugin_t* plugin, const gc_info_t* gc_vars) {
 static
 void na_plugin_event_notify(plugin_t* plugin, plugin_notify_kind_t kind) {
   na_plugin_t* na = (na_plugin_t*) plugin;
-  (void)na;
 
   switch (kind) {
   case MCSAT_SOLVER_START:
     // Re-initialize the heuristics
+    mccormick_event_notify(&na->mccormick);
     break;
   case MCSAT_SOLVER_RESTART:
     // Check if clause compaction needed
+    mccormick_event_notify(&na->mccormick);
     break;
   case MCSAT_SOLVER_CONFLICT:
     // Decay the scores each conflict
+    mccormick_event_notify(&na->mccormick);
     break;
   case MCSAT_SOLVER_POP:
     // Not much to do
+    mccormick_event_notify(&na->mccormick);
     break;
   default:
     assert(false);

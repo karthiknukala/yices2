@@ -28,6 +28,7 @@
 #include "mcsat/utils/lp_data.h"
 #include "mcsat/utils/lp_constraint_db.h"
 #include "mcsat/na/feasible_set_db.h"
+#include "mcsat/na/mccormick.h"
 
 #include "terms/term_manager.h"
 
@@ -94,6 +95,9 @@ struct na_plugin_s {
 
   /** Data related to libpoly */
   lp_data_t lp_data;
+
+  /** Experimental McCormick relaxation */
+  mccormick_t mccormick;
 
   /** Buffer for evaluation */
   int_hmap_t evaluation_value_cache;
