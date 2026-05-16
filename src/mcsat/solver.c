@@ -304,6 +304,15 @@ struct mcsat_solver_s {
   /** Shared lemma session for the current solve */
   uint64_t shared_lemma_session;
 
+  /** Shared fact import cursor */
+  uint64_t shared_fact_cursor;
+
+  /** Sequence number just before the current shared fact session started */
+  uint64_t shared_fact_base_cursor;
+
+  /** Shared fact session for the current solve */
+  uint64_t shared_fact_session;
+
   /** Number of plugins */
   uint32_t plugins_count;
 
@@ -424,13 +433,20 @@ static
 void mcsat_clear_pending_model_hint(mcsat_solver_t* mcsat);
 
 static
-void mcsat_reset_shared_lemma_session(mcsat_solver_t* mcsat, uint64_t session, uint64_t base_cursor);
+void mcsat_reset_shared_sessions(mcsat_solver_t* mcsat,
+                                 uint64_t lemma_session,
+                                 uint64_t lemma_base_cursor,
+                                 uint64_t fact_session,
+                                 uint64_t fact_base_cursor);
 
 static
 void mcsat_process_registration_queue(mcsat_solver_t* mcsat);
 
 static
 void mcsat_import_shared_lemmas(mcsat_solver_t* mcsat);
+
+static
+void mcsat_import_shared_facts(mcsat_solver_t* mcsat);
 
 static
 void mcsat_parallel_frontier_task_delete(mcsat_parallel_frontier_task_t* task);
@@ -573,13 +589,25 @@ void mcsat_clear_pending_model_hint(mcsat_solver_t* mcsat) {
 }
 
 static
-void mcsat_reset_shared_lemma_session(mcsat_solver_t* mcsat, uint64_t session, uint64_t base_cursor) {
-  mcsat->shared_lemma_session = session;
-  mcsat->shared_lemma_base_cursor = base_cursor;
-  if (session == 0 || mcsat->shared_state == NULL) {
+void mcsat_reset_shared_sessions(mcsat_solver_t* mcsat,
+                                 uint64_t lemma_session,
+                                 uint64_t lemma_base_cursor,
+                                 uint64_t fact_session,
+                                 uint64_t fact_base_cursor) {
+  mcsat->shared_lemma_session = lemma_session;
+  mcsat->shared_lemma_base_cursor = lemma_base_cursor;
+  if (lemma_session == 0 || mcsat->shared_state == NULL) {
     mcsat->shared_lemma_cursor = 0;
   } else {
-    mcsat->shared_lemma_cursor = base_cursor;
+    mcsat->shared_lemma_cursor = lemma_base_cursor;
+  }
+
+  mcsat->shared_fact_session = fact_session;
+  mcsat->shared_fact_base_cursor = fact_base_cursor;
+  if (fact_session == 0 || mcsat->shared_state == NULL) {
+    mcsat->shared_fact_cursor = 0;
+  } else {
+    mcsat->shared_fact_cursor = fact_base_cursor;
   }
 }
 
@@ -663,7 +691,7 @@ void mcsat_parallel_invalidate(mcsat_solver_t* mcsat) {
   }
 
   mcsat_parallel_destroy_winner(root);
-  mcsat_reset_shared_lemma_session(root, 0, 0);
+  mcsat_reset_shared_sessions(root, 0, 0, 0, 0);
   mcsat_clear_pending_model_hint(root);
 }
 
@@ -723,9 +751,6 @@ bool mcsat_active_assumptions_are_literals(const mcsat_solver_t* mcsat) {
     term_t literal = mcsat->active_assumptions[i];
     term_t atom = unsigned_term(literal);
     if (atom == NULL_TERM || term_type_kind(mcsat->terms, atom) != BOOL_TYPE) {
-      return false;
-    }
-    if (mcsat_literal_is_arith_atom(mcsat, literal)) {
       return false;
     }
   }
@@ -816,13 +841,54 @@ void mcsat_notify_plugins_of_lemma(mcsat_solver_t* mcsat, ivector_t* lemma_liter
 }
 
 static
+bool mcsat_literal_is_shared_fact_candidate(const mcsat_solver_t* mcsat, term_t literal) {
+  term_t atom = unsigned_term(literal);
+
+  return atom != NULL_TERM &&
+         atom != true_term &&
+         atom != false_term &&
+         term_type_kind(mcsat->terms, atom) == BOOL_TYPE;
+}
+
+static
+void mcsat_notify_plugins_of_fact(mcsat_solver_t* mcsat, term_t literal) {
+  ivector_t lemma_literals;
+  int32_t data[1];
+
+  data[0] = literal;
+  lemma_literals.capacity = 1;
+  lemma_literals.size = 1;
+  lemma_literals.data = data;
+  mcsat_notify_plugins_of_lemma(mcsat, &lemma_literals);
+}
+
+static
+bool mcsat_publish_shared_fact(mcsat_solver_t* mcsat, term_t literal) {
+  uint64_t seq = 0;
+
+  if (mcsat->shared_state == NULL ||
+      mcsat->shared_fact_session == 0 ||
+      !mcsat_literal_is_shared_fact_candidate(mcsat, literal)) {
+    return false;
+  }
+
+  (void) mcsat_shared_state_publish_fact(mcsat->shared_state,
+                                         mcsat->shared_fact_session,
+                                         literal,
+                                         &seq);
+  if (seq > mcsat->shared_fact_cursor) {
+    mcsat->shared_fact_cursor = seq;
+  }
+  return true;
+}
+
+static
 void mcsat_publish_shared_clause(mcsat_solver_t* mcsat, const ivector_t* lemma) {
   ivector_t normalized;
   uint32_t i;
   uint64_t seq = 0;
 
   if (mcsat->shared_state == NULL ||
-      mcsat->shared_lemma_session == 0 ||
       lemma == NULL ||
       lemma->size == 0) {
     return;
@@ -840,16 +906,32 @@ void mcsat_publish_shared_clause(mcsat_solver_t* mcsat, const ivector_t* lemma) 
   }
   mcsat_normalize_clause_literals(&normalized);
   if (normalized.size > 0 && !mcsat_clause_is_tautology(&normalized)) {
-    (void) mcsat_shared_state_publish_clause(mcsat->shared_state,
-                                             mcsat->shared_lemma_session,
-                                             normalized.size,
-                                             normalized.data,
-                                             &seq);
-    if (seq > mcsat->shared_lemma_cursor) {
-      mcsat->shared_lemma_cursor = seq;
+    if (normalized.size == 1 &&
+        mcsat_publish_shared_fact(mcsat, normalized.data[0])) {
+      delete_ivector(&normalized);
+      return;
+    }
+
+    if (mcsat->shared_lemma_session != 0) {
+      (void) mcsat_shared_state_publish_clause(mcsat->shared_state,
+                                               mcsat->shared_lemma_session,
+                                               normalized.size,
+                                               normalized.data,
+                                               &seq);
+      if (seq > mcsat->shared_lemma_cursor) {
+        mcsat->shared_lemma_cursor = seq;
+      }
     }
   }
   delete_ivector(&normalized);
+}
+
+static
+bool mcsat_shared_facts_pending(mcsat_solver_t* mcsat) {
+  if (mcsat->shared_state == NULL || mcsat->shared_fact_session == 0) {
+    return false;
+  }
+  return mcsat->shared_fact_cursor < mcsat_shared_state_latest_fact_seq(mcsat->shared_state);
 }
 
 static
@@ -858,6 +940,20 @@ bool mcsat_shared_lemmas_pending(mcsat_solver_t* mcsat) {
     return false;
   }
   return mcsat->shared_lemma_cursor < mcsat_shared_state_latest_lemma_seq(mcsat->shared_state);
+}
+
+static
+void mcsat_install_shared_fact(mcsat_solver_t* mcsat, term_t literal) {
+  term_t atom;
+
+  atom = unsigned_term(literal);
+  if (atom == NULL_TERM) {
+    return;
+  }
+
+  (void) variable_db_get_variable(mcsat->var_db, atom);
+  mcsat_process_registration_queue(mcsat);
+  mcsat_notify_plugins_of_fact(mcsat, literal);
 }
 
 static
@@ -882,6 +978,29 @@ void mcsat_install_shared_clause(mcsat_solver_t* mcsat, uint32_t n_literals, con
 
   mcsat_notify_plugins_of_lemma(mcsat, &lemma_literals);
   delete_ivector(&lemma_literals);
+}
+
+static
+void mcsat_import_shared_facts(mcsat_solver_t* mcsat) {
+  uint64_t target;
+  uint64_t seq;
+
+  if (mcsat->shared_state == NULL || mcsat->shared_fact_session == 0) {
+    return;
+  }
+
+  target = mcsat_shared_state_latest_fact_seq(mcsat->shared_state);
+  for (seq = mcsat->shared_fact_cursor + 1; seq <= target && mcsat_is_consistent(mcsat); ++seq) {
+    term_t literal = mcsat_shared_state_get_fact(mcsat->shared_state,
+                                                 mcsat->shared_fact_session,
+                                                 seq);
+    if (literal == NULL_TERM) {
+      continue;
+    }
+    mcsat_install_shared_fact(mcsat, literal);
+  }
+
+  mcsat->shared_fact_cursor = target;
 }
 
 static
@@ -1581,6 +1700,9 @@ void mcsat_construct(mcsat_solver_t* mcsat, const context_t* ctx, mcsat_solver_t
   mcsat->shared_lemma_cursor = 0;
   mcsat->shared_lemma_base_cursor = 0;
   mcsat->shared_lemma_session = 0;
+  mcsat->shared_fact_cursor = 0;
+  mcsat->shared_fact_base_cursor = 0;
+  mcsat->shared_fact_session = 0;
   mcsat->pending_model_hint_model = NULL;
   init_ivector(&mcsat->pending_model_hint_filter, 0);
   mcsat->frontier_epoch_mode = false;
@@ -2557,6 +2679,9 @@ bool mcsat_propagate(mcsat_solver_t* mcsat, bool run_learning) {
   bool someone_propagated;
 
   do {
+    if (mcsat_shared_facts_pending(mcsat)) {
+      mcsat_import_shared_facts(mcsat);
+    }
     if (mcsat_shared_lemmas_pending(mcsat)) {
       mcsat_import_shared_lemmas(mcsat);
     }
@@ -3955,6 +4080,13 @@ assumptions_done:
 
   while (!mcsat_should_stop(mcsat)) {
 
+    if (mcsat_shared_facts_pending(mcsat)) {
+      mcsat_import_shared_facts(mcsat);
+      if (!mcsat_is_consistent(mcsat)) {
+        goto conflict;
+      }
+    }
+
     if (mcsat_shared_lemmas_pending(mcsat)) {
       mcsat_import_shared_lemmas(mcsat);
       if (!mcsat_is_consistent(mcsat)) {
@@ -4452,8 +4584,10 @@ void mcsat_solve_parallel(mcsat_solver_t* mcsat, const param_t *params, model_t*
   uint32_t requested_workers;
   uint32_t active_count;
   uint32_t i;
-  uint64_t session;
-  uint64_t base_cursor;
+  uint64_t lemma_session;
+  uint64_t lemma_base_cursor;
+  uint64_t fact_session;
+  uint64_t fact_base_cursor;
   int32_t code;
   size_t stack_size;
   mcsat_solver_t** workers;
@@ -4466,12 +4600,18 @@ void mcsat_solve_parallel(mcsat_solver_t* mcsat, const param_t *params, model_t*
   assert(parallel != NULL);
 
   requested_workers = (uint32_t) mcsat->ctx->mcsat_options.parallel_workers;
-  base_cursor = mcsat->shared_state == NULL ? 0 : mcsat_shared_state_latest_lemma_seq(mcsat->shared_state);
-  session = mcsat->shared_state == NULL ? 0 : mcsat_shared_state_new_lemma_session(mcsat->shared_state);
+  lemma_base_cursor = mcsat->shared_state == NULL ? 0 : mcsat_shared_state_latest_lemma_seq(mcsat->shared_state);
+  lemma_session = mcsat->shared_state == NULL ? 0 : mcsat_shared_state_new_lemma_session(mcsat->shared_state);
+  fact_base_cursor = mcsat->shared_state == NULL ? 0 : mcsat_shared_state_latest_fact_seq(mcsat->shared_state);
+  fact_session = mcsat->shared_state == NULL ? 0 : mcsat_shared_state_new_fact_session(mcsat->shared_state);
   if (requested_workers <= 1 ||
       n_assumptions > 0 ||
       mcsat->ctx->mcsat_options.model_interpolation) {
-    mcsat_reset_shared_lemma_session(mcsat, session, base_cursor);
+    mcsat_reset_shared_sessions(mcsat,
+                                lemma_session,
+                                lemma_base_cursor,
+                                fact_session,
+                                fact_base_cursor);
     mcsat_solve_local(mcsat, params, mdl, n_assumptions, assumptions);
     mcsat_clear_pending_model_hint(mcsat);
     return;
@@ -4481,7 +4621,11 @@ void mcsat_solve_parallel(mcsat_solver_t* mcsat, const param_t *params, model_t*
   mcsat_process_registration_queue(mcsat);
   mcsat_parallel_prepare_term_state(mcsat);
   mcsat_parallel_destroy_winner(mcsat);
-  mcsat_reset_shared_lemma_session(mcsat, session, base_cursor);
+  mcsat_reset_shared_sessions(mcsat,
+                              lemma_session,
+                              lemma_base_cursor,
+                              fact_session,
+                              fact_base_cursor);
 
   parallel->running = true;
   parallel->stop_requested = false;
@@ -4529,7 +4673,11 @@ void mcsat_solve_parallel(mcsat_solver_t* mcsat, const param_t *params, model_t*
   for (i = 0; i < active_count; ++i) {
     workers[i] = mcsat_new_worker_replica(mcsat, i);
     mcsat_process_registration_queue(workers[i]);
-    mcsat_reset_shared_lemma_session(workers[i], session, base_cursor);
+    mcsat_reset_shared_sessions(workers[i],
+                                lemma_session,
+                                lemma_base_cursor,
+                                fact_session,
+                                fact_base_cursor);
     if (mcsat->pending_model_hint_model != NULL && mcsat->pending_model_hint_filter.size > 0) {
       mcsat_set_model_hint_local(workers[i],
                                  mcsat->pending_model_hint_model,
@@ -4640,9 +4788,15 @@ void mcsat_solve(mcsat_solver_t* mcsat, const param_t *params, model_t* mdl, uin
   if (mcsat_parallel_is_enabled(mcsat)) {
     mcsat_solve_parallel(mcsat, params, mdl, n_assumptions, assumptions);
   } else {
-    uint64_t base_cursor = mcsat_shared_state_latest_lemma_seq(mcsat->shared_state);
-    uint64_t session = mcsat_shared_state_new_lemma_session(mcsat->shared_state);
-    mcsat_reset_shared_lemma_session(mcsat, session, base_cursor);
+    uint64_t lemma_base_cursor = mcsat_shared_state_latest_lemma_seq(mcsat->shared_state);
+    uint64_t lemma_session = mcsat_shared_state_new_lemma_session(mcsat->shared_state);
+    uint64_t fact_base_cursor = mcsat_shared_state_latest_fact_seq(mcsat->shared_state);
+    uint64_t fact_session = mcsat_shared_state_new_fact_session(mcsat->shared_state);
+    mcsat_reset_shared_sessions(mcsat,
+                                lemma_session,
+                                lemma_base_cursor,
+                                fact_session,
+                                fact_base_cursor);
     saved_exception = mcsat->exception;
     mcsat_set_exception_handler(mcsat, &mcsat->worker_env);
     code = setjmp(mcsat->worker_env);

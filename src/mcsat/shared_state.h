@@ -47,4 +47,9 @@ bool mcsat_shared_state_publish_clause(mcsat_shared_state_t* state, uint64_t ses
 uint64_t mcsat_shared_state_latest_lemma_seq(mcsat_shared_state_t* state);
 uint32_t mcsat_shared_state_get_clause(mcsat_shared_state_t* state, uint64_t session, uint64_t seq, const term_t** literals_out);
 
+uint64_t mcsat_shared_state_new_fact_session(mcsat_shared_state_t* state);
+bool mcsat_shared_state_publish_fact(mcsat_shared_state_t* state, uint64_t session, term_t literal, uint64_t* seq_out);
+uint64_t mcsat_shared_state_latest_fact_seq(mcsat_shared_state_t* state);
+term_t mcsat_shared_state_get_fact(mcsat_shared_state_t* state, uint64_t session, uint64_t seq);
+
 #endif /* MCSAT_SHARED_STATE_H_ */

@@ -108,6 +108,33 @@ uint32_t mcsat_shared_state_get_clause(mcsat_shared_state_t* state, uint64_t ses
   return 0;
 }
 
+uint64_t mcsat_shared_state_new_fact_session(mcsat_shared_state_t* state) {
+  (void) state;
+  return 0;
+}
+
+bool mcsat_shared_state_publish_fact(mcsat_shared_state_t* state, uint64_t session, term_t literal, uint64_t* seq_out) {
+  (void) state;
+  (void) session;
+  (void) literal;
+  if (seq_out != NULL) {
+    *seq_out = 0;
+  }
+  return false;
+}
+
+uint64_t mcsat_shared_state_latest_fact_seq(mcsat_shared_state_t* state) {
+  (void) state;
+  return 0;
+}
+
+term_t mcsat_shared_state_get_fact(mcsat_shared_state_t* state, uint64_t session, uint64_t seq) {
+  (void) state;
+  (void) session;
+  (void) seq;
+  return NULL_TERM;
+}
+
 #else
 
 #define URCU_API_MAP
@@ -147,15 +174,32 @@ typedef struct shared_lemma_node_s {
 } shared_lemma_node_t;
 
 typedef struct {
+  uint64_t session;
+  term_t literal;
+  uint64_t seq;
+  struct cds_lfht_node node;
+} shared_fact_node_t;
+
+typedef struct {
   shared_lemma_node_t* clause;
   uint64_t session;
 } shared_clause_slot_t;
+
+typedef struct {
+  term_t literal;
+  uint64_t session;
+} shared_fact_slot_t;
 
 typedef struct {
   const term_t* literals;
   uint32_t size;
   uint64_t session;
 } shared_clause_key_t;
+
+typedef struct {
+  term_t literal;
+  uint64_t session;
+} shared_fact_key_t;
 
 struct mcsat_shared_state_s {
   term_table_t* terms;
@@ -168,19 +212,25 @@ struct mcsat_shared_state_s {
   struct cds_lfht* shared_terms;
   struct cds_lfht* shared_variables;
   struct cds_lfht* shared_lemmas;
+  struct cds_lfht* shared_facts;
 
   pvector_t term_nodes;
   pvector_t variable_nodes;
   pvector_t lemma_nodes;
+  pvector_t fact_nodes;
 
   pvector_t variable_terms;
   pvector_t lemma_terms;
+  pvector_t fact_terms;
 
   volatile uint32_t next_variable_id;
   volatile uint32_t max_variable_id;
   volatile uint64_t next_lemma_session;
   volatile uint64_t next_lemma_seq;
   volatile uint64_t max_lemma_seq;
+  volatile uint64_t next_fact_session;
+  volatile uint64_t next_fact_seq;
+  volatile uint64_t max_fact_seq;
 };
 
 static pthread_mutex_t global_shared_state_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -253,6 +303,14 @@ uint32_t shared_hash_clause(uint64_t session, uint32_t size, const term_t litera
 }
 
 static
+uint32_t shared_hash_fact(uint64_t session, term_t literal) {
+  uint32_t hash;
+
+  hash = jenkins_hash_uint64(session);
+  return jenkins_hash_mix2(hash, shared_hash_term(literal));
+}
+
+static
 int shared_term_match(struct cds_lfht_node* node, const void* key) {
   const shared_term_node_t* entry = cds_lfht_entry(node, const shared_term_node_t, node);
   return entry->term == *(const term_t*) key;
@@ -282,6 +340,15 @@ int shared_lemma_match(struct cds_lfht_node* node, const void* key) {
 }
 
 static
+int shared_fact_match(struct cds_lfht_node* node, const void* key) {
+  const shared_fact_node_t* entry = cds_lfht_entry(node, const shared_fact_node_t, node);
+  const shared_fact_key_t* fact_key = (const shared_fact_key_t*) key;
+
+  return entry->session == fact_key->session &&
+         entry->literal == fact_key->literal;
+}
+
+static
 struct cds_lfht* shared_state_new_table(void) {
   return cds_lfht_new(1, 1, 0, CDS_LFHT_AUTO_RESIZE | CDS_LFHT_ACCOUNTING, NULL);
 }
@@ -299,6 +366,9 @@ void shared_state_init(mcsat_shared_state_t* state, term_table_t* terms, type_ta
   state->next_lemma_session = 0;
   state->next_lemma_seq = 0;
   state->max_lemma_seq = 0;
+  state->next_fact_session = 0;
+  state->next_fact_seq = 0;
+  state->max_fact_seq = 0;
 
   code = pthread_mutex_init(&state->storage_lock, NULL);
   if (code != 0) {
@@ -322,13 +392,19 @@ void shared_state_init(mcsat_shared_state_t* state, term_table_t* terms, type_ta
   init_pvector(&state->term_nodes, 0);
   init_pvector(&state->variable_nodes, 0);
   init_pvector(&state->lemma_nodes, 0);
+  init_pvector(&state->fact_nodes, 0);
   init_pvector(&state->variable_terms, 0);
   init_pvector(&state->lemma_terms, 0);
+  init_pvector(&state->fact_terms, 0);
 
   state->shared_terms = shared_state_new_table();
   state->shared_variables = shared_state_new_table();
   state->shared_lemmas = shared_state_new_table();
-  if (state->shared_terms == NULL || state->shared_variables == NULL || state->shared_lemmas == NULL) {
+  state->shared_facts = shared_state_new_table();
+  if (state->shared_terms == NULL ||
+      state->shared_variables == NULL ||
+      state->shared_lemmas == NULL ||
+      state->shared_facts == NULL) {
     out_of_memory();
   }
 }
@@ -379,12 +455,17 @@ void shared_state_destroy(mcsat_shared_state_t* state) {
   if (state->shared_lemmas != NULL) {
     cds_lfht_destroy(state->shared_lemmas, &attr);
   }
+  if (state->shared_facts != NULL) {
+    cds_lfht_destroy(state->shared_facts, &attr);
+  }
 
   shared_state_free_nodes(&state->term_nodes);
   shared_state_free_nodes(&state->variable_nodes);
   shared_state_free_nodes(&state->lemma_nodes);
+  shared_state_free_nodes(&state->fact_nodes);
   shared_state_free_term_chunks(&state->variable_terms);
   shared_state_free_lemma_chunks(&state->lemma_terms);
+  shared_state_free_lemma_chunks(&state->fact_terms);
 
   pthread_mutex_destroy(&state->term_lock);
   pthread_mutex_destroy(&state->storage_lock);
@@ -454,6 +535,24 @@ void shared_state_ensure_lemma_chunk(mcsat_shared_state_t* state, pvector_t* chu
   pthread_mutex_unlock(&state->storage_lock);
 }
 
+static
+void shared_state_ensure_fact_chunk(mcsat_shared_state_t* state, pvector_t* chunks, uint64_t slot) {
+  uint64_t chunk_id;
+
+  chunk_id = (slot - 1) / MCSAT_SHARED_SLOT_CHUNK;
+  pthread_mutex_lock(&state->storage_lock);
+  while (chunks->size <= chunk_id) {
+    shared_fact_slot_t* chunk = (shared_fact_slot_t*) safe_malloc(MCSAT_SHARED_SLOT_CHUNK * sizeof(shared_fact_slot_t));
+    uint32_t i;
+    for (i = 0; i < MCSAT_SHARED_SLOT_CHUNK; ++i) {
+      chunk[i].literal = NULL_TERM;
+      chunk[i].session = 0;
+    }
+    pvector_push(chunks, chunk);
+  }
+  pthread_mutex_unlock(&state->storage_lock);
+}
+
 static inline
 term_t shared_state_load_term_slot(mcsat_shared_state_t* state, pvector_t* chunks, uint64_t slot) {
   uint64_t chunk_id;
@@ -503,6 +602,32 @@ shared_clause_slot_t shared_state_load_lemma_slot(mcsat_shared_state_t* state, p
   return lemma_slot;
 }
 
+static inline
+shared_fact_slot_t shared_state_load_fact_slot(mcsat_shared_state_t* state, pvector_t* chunks, uint64_t slot) {
+  uint64_t chunk_id;
+  shared_fact_slot_t* chunk;
+  shared_fact_slot_t fact_slot;
+
+  fact_slot.literal = NULL_TERM;
+  fact_slot.session = 0;
+
+  if (slot == 0) {
+    return fact_slot;
+  }
+
+  chunk_id = (slot - 1) / MCSAT_SHARED_SLOT_CHUNK;
+  pthread_mutex_lock(&state->storage_lock);
+  if (chunk_id >= chunks->size) {
+    pthread_mutex_unlock(&state->storage_lock);
+    return fact_slot;
+  }
+
+  chunk = (shared_fact_slot_t*) chunks->data[chunk_id];
+  fact_slot = chunk[(slot - 1) % MCSAT_SHARED_SLOT_CHUNK];
+  pthread_mutex_unlock(&state->storage_lock);
+  return fact_slot;
+}
+
 static
 void shared_state_store_term_slot(mcsat_shared_state_t* state, pvector_t* chunks, uint64_t slot, term_t term) {
   term_t* chunk;
@@ -523,6 +648,19 @@ void shared_state_store_lemma_slot(mcsat_shared_state_t* state, pvector_t* chunk
   pthread_mutex_lock(&state->storage_lock);
   chunk = (shared_clause_slot_t*) chunks->data[(slot - 1) / MCSAT_SHARED_SLOT_CHUNK];
   chunk[(slot - 1) % MCSAT_SHARED_SLOT_CHUNK].clause = clause;
+  chunk[(slot - 1) % MCSAT_SHARED_SLOT_CHUNK].session = session;
+  pthread_mutex_unlock(&state->storage_lock);
+  __sync_synchronize();
+}
+
+static
+void shared_state_store_fact_slot(mcsat_shared_state_t* state, pvector_t* chunks, uint64_t slot, uint64_t session, term_t literal) {
+  shared_fact_slot_t* chunk;
+
+  shared_state_ensure_fact_chunk(state, chunks, slot);
+  pthread_mutex_lock(&state->storage_lock);
+  chunk = (shared_fact_slot_t*) chunks->data[(slot - 1) / MCSAT_SHARED_SLOT_CHUNK];
+  chunk[(slot - 1) % MCSAT_SHARED_SLOT_CHUNK].literal = literal;
   chunk[(slot - 1) % MCSAT_SHARED_SLOT_CHUNK].session = session;
   pthread_mutex_unlock(&state->storage_lock);
   __sync_synchronize();
@@ -550,6 +688,18 @@ shared_clause_slot_t shared_state_wait_lemma_slot(mcsat_shared_state_t* state, p
     lemma_slot = shared_state_load_lemma_slot(state, chunks, slot);
   }
   return lemma_slot;
+}
+
+static
+shared_fact_slot_t shared_state_wait_fact_slot(mcsat_shared_state_t* state, pvector_t* chunks, uint64_t slot) {
+  shared_fact_slot_t fact_slot;
+
+  fact_slot = shared_state_load_fact_slot(state, chunks, slot);
+  while (fact_slot.literal == NULL_TERM) {
+    sched_yield();
+    fact_slot = shared_state_load_fact_slot(state, chunks, slot);
+  }
+  return fact_slot;
 }
 
 static
@@ -821,6 +971,93 @@ uint32_t mcsat_shared_state_get_clause(mcsat_shared_state_t* state, uint64_t ses
     *literals_out = lemma_slot.clause->literals;
   }
   return lemma_slot.clause->size;
+}
+
+uint64_t mcsat_shared_state_new_fact_session(mcsat_shared_state_t* state) {
+  if (state == NULL) {
+    return 0;
+  }
+  shared_state_register_thread();
+  return __sync_add_and_fetch(&state->next_fact_session, 1);
+}
+
+bool mcsat_shared_state_publish_fact(mcsat_shared_state_t* state, uint64_t session, term_t literal, uint64_t* seq_out) {
+  shared_fact_node_t* entry;
+  struct cds_lfht_node* found;
+  struct cds_lfht_node* node;
+  shared_fact_node_t* found_entry;
+  shared_fact_key_t key;
+  shared_fact_slot_t fact_slot;
+  uint64_t seq;
+
+  if (seq_out != NULL) {
+    *seq_out = 0;
+  }
+  if (state == NULL || session == 0 || literal == NULL_TERM) {
+    return false;
+  }
+
+  key.literal = literal;
+  key.session = session;
+  shared_state_register_thread();
+  mcsat_shared_state_publish_term(state, literal);
+
+  entry = (shared_fact_node_t*) safe_malloc(sizeof(shared_fact_node_t));
+  entry->session = key.session;
+  entry->literal = key.literal;
+  entry->seq = __sync_add_and_fetch(&state->next_fact_seq, 1);
+  cds_lfht_node_init(&entry->node);
+
+  urcu_memb_read_lock();
+  node = cds_lfht_add_unique(state->shared_facts,
+                             shared_hash_fact(key.session, key.literal),
+                             shared_fact_match,
+                             &key,
+                             &entry->node);
+  found = node;
+  urcu_memb_read_unlock();
+
+  if (found == &entry->node) {
+    shared_state_store_fact_slot(state, &state->fact_terms, entry->seq, entry->session, entry->literal);
+    shared_state_update_u64_max(&state->max_fact_seq, entry->seq);
+    shared_state_record_node(state, &state->fact_nodes, entry);
+    if (seq_out != NULL) {
+      *seq_out = entry->seq;
+    }
+    return true;
+  }
+
+  found_entry = cds_lfht_entry(found, shared_fact_node_t, node);
+  safe_free(entry);
+  seq = found_entry->seq;
+  fact_slot = shared_state_wait_fact_slot(state, &state->fact_terms, seq);
+  if (fact_slot.session != found_entry->session || fact_slot.literal == NULL_TERM) {
+    return false;
+  }
+  if (seq_out != NULL) {
+    *seq_out = seq;
+  }
+  return false;
+}
+
+uint64_t mcsat_shared_state_latest_fact_seq(mcsat_shared_state_t* state) {
+  if (state == NULL) {
+    return 0;
+  }
+  return state->max_fact_seq;
+}
+
+term_t mcsat_shared_state_get_fact(mcsat_shared_state_t* state, uint64_t session, uint64_t seq) {
+  shared_fact_slot_t fact_slot;
+
+  if (state == NULL || session == 0 || seq == 0 || seq > state->max_fact_seq) {
+    return NULL_TERM;
+  }
+  fact_slot = shared_state_load_fact_slot(state, &state->fact_terms, seq);
+  if (fact_slot.session != session) {
+    return NULL_TERM;
+  }
+  return fact_slot.literal;
 }
 
 #endif
