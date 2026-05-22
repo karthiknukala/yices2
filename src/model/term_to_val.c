@@ -163,6 +163,14 @@ static value_t term_to_val(term_converter_t *convert, term_t t) {
     v = term_to_bv_constant(convert, bvconst_term_desc(terms, t));
     break;
 
+  case ROUNDING_MODE_CONSTANT:
+    v = vtbl_mk_rounding_mode(convert->vtbl, rounding_mode_term_desc(terms, t));
+    break;
+
+  case FP_CONSTANT:
+    v = vtbl_mk_fp(convert->vtbl, fp_const_term_desc(terms, t));
+    break;
+
   case TUPLE_TERM:
     v = convert_cached_value(convert, t);
     if (v < 0) {

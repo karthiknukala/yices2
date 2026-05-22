@@ -19,6 +19,7 @@
 #include "mcsat/value.h"
 
 #include <assert.h>
+#include <inttypes.h>
 
 #include "utils/memalloc.h"
 #include "utils/hash_functions.h"
@@ -62,6 +63,16 @@ void mcsat_value_construct_bv_value(mcsat_value_t* value, const bvconstant_t* bv
   }
 }
 
+void mcsat_value_construct_rounding_mode(mcsat_value_t* value, fp_rounding_mode_t mode) {
+  value->type = VALUE_ROUNDING_MODE;
+  value->rm_value = mode;
+}
+
+void mcsat_value_construct_fp_value(mcsat_value_t* value, const fp_const_t* fp_value) {
+  value->type = VALUE_FP;
+  value->fp_value = *fp_value;
+}
+
 void mcsat_value_construct_copy(mcsat_value_t* value, const mcsat_value_t* from) {
   value->type = from->type;
   switch (value->type) {
@@ -80,6 +91,12 @@ void mcsat_value_construct_copy(mcsat_value_t* value, const mcsat_value_t* from)
   case VALUE_BV:
     init_bvconstant(&value->bv_value);
     bvconstant_copy(&value->bv_value, from->bv_value.bitsize, from->bv_value.data);
+    break;
+  case VALUE_ROUNDING_MODE:
+    value->rm_value = from->rm_value;
+    break;
+  case VALUE_FP:
+    value->fp_value = from->fp_value;
     break;
   default:
     assert(false);
@@ -146,6 +163,12 @@ void mcsat_value_construct_from_constant_term(mcsat_value_t* t_value, term_table
     lp_rational_destruct(&rat_value);
     break;
   }
+  case ROUNDING_MODE_CONSTANT:
+    mcsat_value_construct_rounding_mode(t_value, rounding_mode_term_desc(terms, t));
+    break;
+  case FP_CONSTANT:
+    mcsat_value_construct_fp_value(t_value, fp_const_term_desc(terms, t));
+    break;
   default:
     assert(false);
   }
@@ -182,6 +205,18 @@ mcsat_value_t* mcsat_value_new_bv_value(const bvconstant_t *bv_value) {
   return result;
 }
 
+mcsat_value_t* mcsat_value_new_rounding_mode(fp_rounding_mode_t mode) {
+  mcsat_value_t* result = (mcsat_value_t*) safe_malloc(sizeof(mcsat_value_t));
+  mcsat_value_construct_rounding_mode(result, mode);
+  return result;
+}
+
+mcsat_value_t* mcsat_value_new_fp_value(const fp_const_t *fp_value) {
+  mcsat_value_t* result = (mcsat_value_t*) safe_malloc(sizeof(mcsat_value_t));
+  mcsat_value_construct_fp_value(result, fp_value);
+  return result;
+}
+
 mcsat_value_t* mcsat_value_new_copy(const mcsat_value_t *from) {
   mcsat_value_t* result = (mcsat_value_t*) safe_malloc(sizeof(mcsat_value_t));
   mcsat_value_construct_copy(result, from);
@@ -202,6 +237,9 @@ void mcsat_value_destruct(mcsat_value_t* value) {
     break;
   case VALUE_BV:
     delete_bvconstant(&value->bv_value);
+    break;
+  case VALUE_ROUNDING_MODE:
+  case VALUE_FP:
     break;
   default:
     assert(false);
@@ -240,6 +278,38 @@ void mcsat_value_print(const mcsat_value_t* value, FILE* out) {
     break;
   case VALUE_BV:
     bvconst_print(out, value->bv_value.data, value->bv_value.bitsize);
+    break;
+  case VALUE_ROUNDING_MODE:
+    switch (value->rm_value) {
+    case FP_RNE: fprintf(out, "RNE"); break;
+    case FP_RNA: fprintf(out, "RNA"); break;
+    case FP_RTN: fprintf(out, "RTN"); break;
+    case FP_RTP: fprintf(out, "RTP"); break;
+    case FP_RTZ: fprintf(out, "RTZ"); break;
+    }
+    break;
+  case VALUE_FP:
+    switch ((fp_value_kind_t) value->fp_value.kind) {
+    case FP_VALUE_NAN:
+      fprintf(out, "(_ NaN %"PRIu32" %"PRIu32")", value->fp_value.ebits, value->fp_value.sbits);
+      break;
+    case FP_VALUE_POS_INF:
+      fprintf(out, "(_ +oo %"PRIu32" %"PRIu32")", value->fp_value.ebits, value->fp_value.sbits);
+      break;
+    case FP_VALUE_NEG_INF:
+      fprintf(out, "(_ -oo %"PRIu32" %"PRIu32")", value->fp_value.ebits, value->fp_value.sbits);
+      break;
+    case FP_VALUE_POS_ZERO:
+      fprintf(out, "(_ +zero %"PRIu32" %"PRIu32")", value->fp_value.ebits, value->fp_value.sbits);
+      break;
+    case FP_VALUE_NEG_ZERO:
+      fprintf(out, "(_ -zero %"PRIu32" %"PRIu32")", value->fp_value.ebits, value->fp_value.sbits);
+      break;
+    case FP_VALUE_NUMERAL:
+      fprintf(out, "(fp %u 0x%"PRIx64" 0x%"PRIx64")",
+              value->fp_value.sign ? 1u : 0u, value->fp_value.exponent, value->fp_value.significand);
+      break;
+    }
     break;
   default:
     assert(false);
@@ -291,6 +361,17 @@ bool mcsat_value_eq(const mcsat_value_t* v1, const mcsat_value_t* v2) {
     assert(v1->bv_value.bitsize == v2->bv_value.bitsize);
     return bvconst_eq(v1->bv_value.data, v2->bv_value.data, v1->bv_value.width);
   }
+  case VALUE_ROUNDING_MODE:
+    assert(v2->type == VALUE_ROUNDING_MODE);
+    return v1->rm_value == v2->rm_value;
+  case VALUE_FP:
+    assert(v2->type == VALUE_FP);
+    return v1->fp_value.ebits == v2->fp_value.ebits &&
+           v1->fp_value.sbits == v2->fp_value.sbits &&
+           v1->fp_value.kind == v2->fp_value.kind &&
+           v1->fp_value.sign == v2->fp_value.sign &&
+           v1->fp_value.exponent == v2->fp_value.exponent &&
+           v1->fp_value.significand == v2->fp_value.significand;
   default:
     assert(false);
     return false;
@@ -320,6 +401,15 @@ uint32_t mcsat_value_hash(const mcsat_value_t* v) {
     bvconst_normalize(v->bv_value.data, v->bv_value.bitsize);
     return bvconst_hash(v->bv_value.data, v->bv_value.bitsize);
   }
+  case VALUE_ROUNDING_MODE:
+    return jenkins_hash_pair((uint32_t) v->rm_value, 0, 0x97f0a11u);
+  case VALUE_FP: {
+    uint32_t h1 = jenkins_hash_quad(v->fp_value.ebits, v->fp_value.sbits,
+                                    v->fp_value.kind, v->fp_value.sign, 0x4f93a51u);
+    uint32_t h2 = jenkins_hash_mix2(jenkins_hash_uint64(v->fp_value.exponent),
+                                    jenkins_hash_uint64(v->fp_value.significand));
+    return jenkins_hash_mix2(h1, h2);
+  }
   default:
     assert(false);
     return 0;
@@ -347,6 +437,12 @@ term_t mcsat_value_to_term(const mcsat_value_t* mcsat_value, term_manager_t* tm)
     result = mk_arith_constant(tm, (rational_t*) &mcsat_value->q);
     break;
   }
+  case VALUE_ROUNDING_MODE:
+    result = rounding_mode_constant(tm->terms, mcsat_value->rm_value);
+    break;
+  case VALUE_FP:
+    result = fp_constant(tm->terms, &mcsat_value->fp_value);
+    break;
   case VALUE_LIBPOLY:
     if (lp_value_is_rational(&mcsat_value->lp_value)) {
       lp_rational_t lp_q;
@@ -421,6 +517,12 @@ value_t mcsat_value_to_value(const mcsat_value_t* mcsat_value, type_table_t *typ
   case VALUE_BV:
     value = vtbl_mk_bv_from_bv(vtbl, mcsat_value->bv_value.bitsize, mcsat_value->bv_value.data);
     break;
+  case VALUE_ROUNDING_MODE:
+    value = vtbl_mk_rounding_mode(vtbl, mcsat_value->rm_value);
+    break;
+  case VALUE_FP:
+    value = vtbl_mk_fp(vtbl, &mcsat_value->fp_value);
+    break;
   default:
     assert(false);
   }
@@ -474,6 +576,12 @@ void mcsat_value_construct_from_value(mcsat_value_t* mcsat_value, value_table_t*
     delete_bvconstant(&v2);
     break;
   }
+  case ROUNDING_MODE_VALUE:
+    mcsat_value_construct_rounding_mode(mcsat_value, vtbl_rounding_mode(vtbl, v));
+    break;
+  case FP_VALUE:
+    mcsat_value_construct_fp_value(mcsat_value, vtbl_fp(vtbl, v));
+    break;
   default:
     assert(false);
   }

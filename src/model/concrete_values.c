@@ -775,10 +775,13 @@ static void vtbl_delete_descriptors(value_table_t *table, uint32_t k) {
       q_clear(&((value_ff_t*)table->desc[i].ptr)->mod);
       /* fall through */
     case BITVECTOR_VALUE:
+    case FP_VALUE:
     case TUPLE_VALUE:
     case MAP_VALUE:
     case UPDATE_VALUE:
       safe_free(table->desc[i].ptr);
+      break;
+    case ROUNDING_MODE_VALUE:
       break;
     }
   }
@@ -876,6 +879,17 @@ type_t vtbl_value_type(value_table_t *table, value_t v) {
   case BITVECTOR_VALUE:
     tau = bv_type(table->type_table, vtbl_bitvector(table, v)->nbits);
     break;
+
+  case ROUNDING_MODE_VALUE:
+    tau = rounding_mode_type(table->type_table);
+    break;
+
+  case FP_VALUE: {
+    value_fp_t *fp;
+    fp = vtbl_fp(table, v);
+    tau = fp_type(table->type_table, fp->ebits, fp->sbits);
+    break;
+  }
 
   case UNINTERPRETED_VALUE:
     u = vtbl_unint(table, v);
@@ -1418,6 +1432,18 @@ typedef struct {
 typedef struct {
   int_hobj_t m;
   value_table_t *table;
+  fp_rounding_mode_t mode;
+} rm_hobj_t;
+
+typedef struct {
+  int_hobj_t m;
+  value_table_t *table;
+  const fp_const_t *fp;
+} fp_hobj_t;
+
+typedef struct {
+  int_hobj_t m;
+  value_table_t *table;
   uint32_t nelems;
   value_t *elem;
 } tuple_hobj_t;
@@ -1498,6 +1524,20 @@ static uint32_t hash_const_value(const_hobj_t *o) {
 
 static uint32_t hash_bv_value(bv_hobj_t *o) {
   return bvconst_hash(o->data, o->nbits);
+}
+
+static uint32_t hash_rm_value(rm_hobj_t *o) {
+  return jenkins_hash_pair((uint32_t) o->mode, 0, 0x97f0a11u);
+}
+
+static uint32_t hash_fp_value(fp_hobj_t *o) {
+  const fp_const_t *fp;
+  uint32_t h1, h2;
+
+  fp = o->fp;
+  h1 = jenkins_hash_quad(fp->ebits, fp->sbits, fp->kind, fp->sign, 0x4f93a51u);
+  h2 = jenkins_hash_mix2(jenkins_hash_uint64(fp->exponent), jenkins_hash_uint64(fp->significand));
+  return jenkins_hash_mix2(h1, h2);
 }
 
 static uint32_t hash_tuple_value(tuple_hobj_t *o) {
@@ -1585,6 +1625,32 @@ static bool equal_bv_value(bv_hobj_t *o, value_t i) {
   }
   d = table->desc[i].ptr;
   return d->nbits == o->nbits && bvconst_eq(d->data, o->data, d->width);
+}
+
+static bool equal_rm_value(rm_hobj_t *o, value_t i) {
+  value_table_t *table;
+
+  table = o->table;
+  return table->kind[i] == ROUNDING_MODE_VALUE && table->desc[i].integer == (int32_t) o->mode;
+}
+
+static bool equal_fp_value(fp_hobj_t *o, value_t i) {
+  value_table_t *table;
+  value_fp_t *d;
+  const fp_const_t *fp;
+
+  table = o->table;
+  if (table->kind[i] != FP_VALUE) {
+    return false;
+  }
+  d = table->desc[i].ptr;
+  fp = o->fp;
+  return d->ebits == fp->ebits &&
+         d->sbits == fp->sbits &&
+         d->kind == fp->kind &&
+         d->sign == fp->sign &&
+         d->exponent == fp->exponent &&
+         d->significand == fp->significand;
 }
 
 
@@ -1766,6 +1832,36 @@ static value_t build_bv_value(bv_hobj_t *o) {
   table = o->table;
   i = allocate_object(table);
   table->kind[i] = BITVECTOR_VALUE;
+  table->desc[i].ptr = d;
+  set_bit(table->canonical, i);
+
+  return i;
+}
+
+static value_t build_rm_value(rm_hobj_t *o) {
+  value_table_t *table;
+  value_t i;
+
+  table = o->table;
+  i = allocate_object(table);
+  table->kind[i] = ROUNDING_MODE_VALUE;
+  table->desc[i].integer = (int32_t) o->mode;
+  set_bit(table->canonical, i);
+
+  return i;
+}
+
+static value_t build_fp_value(fp_hobj_t *o) {
+  value_table_t *table;
+  value_fp_t *d;
+  value_t i;
+
+  d = (value_fp_t *) safe_malloc(sizeof(value_fp_t));
+  *d = *o->fp;
+
+  table = o->table;
+  i = allocate_object(table);
+  table->kind[i] = FP_VALUE;
   table->desc[i].ptr = d;
   set_bit(table->canonical, i);
 
@@ -2125,6 +2221,38 @@ value_t vtbl_mk_bv_one(value_table_t *table, uint32_t n) {
 
 
 /*
+ * Rounding-mode constant
+ */
+value_t vtbl_mk_rounding_mode(value_table_t *table, fp_rounding_mode_t mode) {
+  rm_hobj_t rm_hobj;
+
+  rm_hobj.m.hash = (hobj_hash_t) hash_rm_value;
+  rm_hobj.m.eq = (hobj_eq_t) equal_rm_value;
+  rm_hobj.m.build = (hobj_build_t) build_rm_value;
+  rm_hobj.table = table;
+  rm_hobj.mode = mode;
+
+  return int_htbl_get_obj(&table->htbl, (int_hobj_t *) &rm_hobj);
+}
+
+
+/*
+ * Floating-point constant
+ */
+value_t vtbl_mk_fp(value_table_t *table, const fp_const_t *fp) {
+  fp_hobj_t fp_hobj;
+
+  fp_hobj.m.hash = (hobj_hash_t) hash_fp_value;
+  fp_hobj.m.eq = (hobj_eq_t) equal_fp_value;
+  fp_hobj.m.build = (hobj_build_t) build_fp_value;
+  fp_hobj.table = table;
+  fp_hobj.fp = fp;
+
+  return int_htbl_get_obj(&table->htbl, (int_hobj_t *) &fp_hobj);
+}
+
+
+/*
  * Tuple (e[0] ... e[n-1])
  */
 value_t vtbl_mk_tuple(value_table_t *table, uint32_t n, value_t *e) {
@@ -2467,6 +2595,25 @@ value_t vtbl_make_object(value_table_t *vtbl, type_t tau) {
   case BITVECTOR_TYPE:
     v = vtbl_mk_bv_zero(vtbl, bv_type_size(types, tau));
     break;
+
+  case ROUNDING_MODE_TYPE:
+    v = vtbl_mk_rounding_mode(vtbl, FP_RTZ);
+    break;
+
+  case FP_TYPE: {
+    fp_const_t fp;
+    fp_type_t *d;
+
+    d = fp_type_desc(types, tau);
+    fp.ebits = d->ebits;
+    fp.sbits = d->sbits;
+    fp.kind = FP_VALUE_POS_ZERO;
+    fp.sign = false;
+    fp.exponent = 0;
+    fp.significand = 0;
+    v = vtbl_mk_fp(vtbl, &fp);
+    break;
+  }
 
   case SCALAR_TYPE:
   case UNINTERPRETED_TYPE:
@@ -3086,6 +3233,26 @@ value_t vtbl_gen_object(value_table_t *table, type_t tau, uint32_t i) {
     v = vtbl_gen_bitvector(table, bv_type_size(types, tau), i);
     break;
 
+  case ROUNDING_MODE_TYPE:
+    assert(i < 5);
+    v = vtbl_mk_rounding_mode(table, (fp_rounding_mode_t) i);
+    break;
+
+  case FP_TYPE: {
+    fp_const_t fp;
+    fp_type_t *d;
+
+    d = fp_type_desc(types, tau);
+    fp.ebits = d->ebits;
+    fp.sbits = d->sbits;
+    fp.kind = i == 0 ? FP_VALUE_POS_ZERO : FP_VALUE_NEG_ZERO;
+    fp.sign = (i != 0);
+    fp.exponent = 0;
+    fp.significand = 0;
+    v = vtbl_mk_fp(table, &fp);
+    break;
+  }
+
   case SCALAR_TYPE:
     v = vtbl_mk_const(table, tau, i, NULL); // anonymous constant
     break;
@@ -3372,6 +3539,24 @@ value_t vtbl_find_object(value_table_t *table, type_t tau, uint32_t i) {
 
   case BITVECTOR_TYPE:
     return vtbl_find_bv64(table, bv_type_size(types, tau), (uint64_t) i);
+
+  case ROUNDING_MODE_TYPE:
+    assert(i < 5);
+    return vtbl_mk_rounding_mode(table, (fp_rounding_mode_t) i);
+
+  case FP_TYPE: {
+    fp_const_t fp;
+    fp_type_t *d;
+
+    d = fp_type_desc(types, tau);
+    fp.ebits = d->ebits;
+    fp.sbits = d->sbits;
+    fp.kind = i == 0 ? FP_VALUE_POS_ZERO : FP_VALUE_NEG_ZERO;
+    fp.sign = (i != 0);
+    fp.exponent = 0;
+    fp.significand = 0;
+    return vtbl_mk_fp(table, &fp);
+  }
 
   case SCALAR_TYPE:
     return vtbl_find_const(table, tau, i);

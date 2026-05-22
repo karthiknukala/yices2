@@ -574,6 +574,8 @@ static const char * const tag2string[NUM_TERM_KINDS] = {
   "arith-ff-const",
   "bv64-const",
   "bv-const",
+  "rounding-mode",
+  "fp-const",
   "variable",
   "uninterpreted",
   "arith-eq",
@@ -613,6 +615,19 @@ static const char * const tag2string[NUM_TERM_KINDS] = {
   "bveq",
   "bvge",
   "bvsge",
+  "fp.add",
+  "fp.sub",
+  "fp.mul",
+  "fp.eq",
+  "fp.lt",
+  "fp.leq",
+  "fp.gt",
+  "fp.geq",
+  "fp.isNaN",
+  "fp.isInfinite",
+  "fp.isZero",
+  "fp.isSubnormal",
+  "fp.isNormal",
   "select",
   "bit",
   "pprod",
@@ -633,7 +648,7 @@ static void print_term_recur(FILE *f, term_table_t *tbl, term_t t, int32_t level
 static void print_composite_term(FILE *f, term_table_t *tbl, term_kind_t tag, composite_term_t *d, int32_t level) {
   uint32_t i, n;
 
-  assert(ITE_TERM <= tag && tag <= BV_SGE_ATOM);
+  assert((ITE_TERM <= tag && tag <= BV_SGE_ATOM) || (FP_ADD <= tag && tag <= FP_GEQ_ATOM));
   fputc('(', f);
   fputs(tag2string[tag], f);
   n = d->arity;
@@ -869,6 +884,37 @@ static void print_bvconst64_term(FILE *f, bvconst64_term_t *d) {
   print_bvconst64(f, d->value, d->bitsize);
 }
 
+static void print_rounding_mode(FILE *f, fp_rounding_mode_t mode) {
+  static const char * const names[] = { "RNE", "RNA", "RTN", "RTP", "RTZ" };
+
+  assert(mode <= FP_RTZ);
+  fputs(names[mode], f);
+}
+
+static void print_fpconst_term(FILE *f, fp_const_t *d) {
+  switch (d->kind) {
+  case FP_VALUE_NAN:
+    fprintf(f, "(_ NaN %"PRIu32" %"PRIu32")", d->ebits, d->sbits);
+    break;
+  case FP_VALUE_POS_INF:
+    fprintf(f, "(_ +oo %"PRIu32" %"PRIu32")", d->ebits, d->sbits);
+    break;
+  case FP_VALUE_NEG_INF:
+    fprintf(f, "(_ -oo %"PRIu32" %"PRIu32")", d->ebits, d->sbits);
+    break;
+  case FP_VALUE_POS_ZERO:
+    fprintf(f, "(_ +zero %"PRIu32" %"PRIu32")", d->ebits, d->sbits);
+    break;
+  case FP_VALUE_NEG_ZERO:
+    fprintf(f, "(_ -zero %"PRIu32" %"PRIu32")", d->ebits, d->sbits);
+    break;
+  default:
+    fprintf(f, "(fp %u 0x%"PRIx64" 0x%"PRIx64")",
+            d->sign ? 1u : 0u, d->exponent, d->significand);
+    break;
+  }
+}
+
 static void print_term_idx_recur(FILE *f, term_table_t *tbl, int32_t i, int32_t level) {
   char *name;
 
@@ -916,6 +962,14 @@ static void print_term_idx_recur(FILE *f, term_table_t *tbl, int32_t i, int32_t 
     print_bvconst_term(f, bvconst_for_idx(tbl, i));
     break;
 
+  case ROUNDING_MODE_CONSTANT:
+    print_rounding_mode(f, (fp_rounding_mode_t) integer_value_for_idx(tbl, i));
+    break;
+
+  case FP_CONSTANT:
+    print_fpconst_term(f, ptr_for_idx(tbl, i));
+    break;
+
   case ARITH_EQ_ATOM:
     if (name != NULL && level <= 0) {
       fputs(name, f);
@@ -948,6 +1002,11 @@ static void print_term_idx_recur(FILE *f, term_table_t *tbl, int32_t i, int32_t 
   case ARITH_FLOOR:
   case ARITH_CEIL:
   case ARITH_ABS:
+  case FP_ISNAN_ATOM:
+  case FP_ISINF_ATOM:
+  case FP_ISZERO_ATOM:
+  case FP_ISSUBNORMAL_ATOM:
+  case FP_ISNORMAL_ATOM:
     if (name != NULL && level <= 0) {
       fputs(name, f);
     } else {
@@ -995,6 +1054,14 @@ static void print_term_idx_recur(FILE *f, term_table_t *tbl, int32_t i, int32_t 
   case BV_EQ_ATOM:
   case BV_GE_ATOM:
   case BV_SGE_ATOM:
+  case FP_ADD:
+  case FP_SUB:
+  case FP_MUL:
+  case FP_EQ_ATOM:
+  case FP_LT_ATOM:
+  case FP_LEQ_ATOM:
+  case FP_GT_ATOM:
+  case FP_GEQ_ATOM:
     // i's descriptor is a composite term
     if (name != NULL && level <= 0) {
       fputs(name, f);
@@ -1133,6 +1200,16 @@ static void print_name_or_constant(FILE *f, term_table_t *tbl, term_t t) {
     print_bvconst_term(f, bvconst_term_desc(tbl, t));
     break;
 
+  case ROUNDING_MODE_CONSTANT:
+    assert(is_pos_term(t));
+    print_rounding_mode(f, rounding_mode_term_desc(tbl, t));
+    break;
+
+  case FP_CONSTANT:
+    assert(is_pos_term(t));
+    print_fpconst_term(f, fp_const_term_desc(tbl, t));
+    break;
+
   default:
     if (t <= false_term) {
       fputs(term2string[t], f);
@@ -1166,6 +1243,16 @@ static void print_id_or_constant(FILE *f, term_table_t *tbl, term_t t) {
   case BV_CONSTANT:
     assert(is_pos_term(t));
     print_bvconst_term(f, bvconst_term_desc(tbl, t));
+    break;
+
+  case ROUNDING_MODE_CONSTANT:
+    assert(is_pos_term(t));
+    print_rounding_mode(f, rounding_mode_term_desc(tbl, t));
+    break;
+
+  case FP_CONSTANT:
+    assert(is_pos_term(t));
+    print_fpconst_term(f, fp_const_term_desc(tbl, t));
     break;
 
   default:
@@ -1244,7 +1331,7 @@ static void print_padded_string(FILE *f, char *s, uint32_t l) {
 static void print_composite(FILE *f, term_table_t *tbl, term_kind_t tag, composite_term_t *d) {
   uint32_t i, n;
 
-  assert(ITE_TERM <= tag && tag <= BV_SGE_ATOM);
+  assert((ITE_TERM <= tag && tag <= BV_SGE_ATOM) || (FP_ADD <= tag && tag <= FP_GEQ_ATOM));
   fputc('(', f);
   fputs(tag2string[tag], f);
   n = d->arity;
@@ -1548,6 +1635,14 @@ void print_term_table(FILE *f, term_table_t *tbl) {
         print_bvconst_term(f, bvconst_for_idx(tbl, i));
         break;
 
+      case ROUNDING_MODE_CONSTANT:
+        print_rounding_mode(f, (fp_rounding_mode_t) integer_value_for_idx(tbl, i));
+        break;
+
+      case FP_CONSTANT:
+        print_fpconst_term(f, ptr_for_idx(tbl, i));
+        break;
+
       case ARITH_EQ_ATOM:
         fputs("(arith-eq ", f);
         print_id_or_constant(f, tbl, integer_value_for_idx(tbl, i));
@@ -1564,6 +1659,11 @@ void print_term_table(FILE *f, term_table_t *tbl) {
       case ARITH_FLOOR:
       case ARITH_CEIL:
       case ARITH_ABS:
+      case FP_ISNAN_ATOM:
+      case FP_ISINF_ATOM:
+      case FP_ISZERO_ATOM:
+      case FP_ISSUBNORMAL_ATOM:
+      case FP_ISNORMAL_ATOM:
 	fputc('(', f);
 	fputs(tag2string[kind_for_idx(tbl, i)], f);
 	fputc(' ', f);
@@ -1602,6 +1702,14 @@ void print_term_table(FILE *f, term_table_t *tbl) {
       case BV_EQ_ATOM:
       case BV_GE_ATOM:
       case BV_SGE_ATOM:
+      case FP_ADD:
+      case FP_SUB:
+      case FP_MUL:
+      case FP_EQ_ATOM:
+      case FP_LT_ATOM:
+      case FP_LEQ_ATOM:
+      case FP_GT_ATOM:
+      case FP_GEQ_ATOM:
         // i's descriptor is a composite term
         print_composite(f, tbl, kind_for_idx(tbl, i),
 			composite_for_idx(tbl, i));
@@ -1672,6 +1780,14 @@ static void print_term_idx_desc(FILE *f, term_table_t *tbl, int32_t i) {
     print_bvconst_term(f, bvconst_for_idx(tbl, i));
     break;
 
+  case ROUNDING_MODE_CONSTANT:
+    print_rounding_mode(f, (fp_rounding_mode_t) integer_value_for_idx(tbl, i));
+    break;
+
+  case FP_CONSTANT:
+    print_fpconst_term(f, ptr_for_idx(tbl, i));
+    break;
+
   case ARITH_EQ_ATOM:
     fputs("(arith-eq ", f);
     print_id_or_constant(f, tbl, integer_value_for_idx(tbl, i));
@@ -1692,6 +1808,11 @@ static void print_term_idx_desc(FILE *f, term_table_t *tbl, int32_t i) {
   case ARITH_FLOOR:
   case ARITH_CEIL:
   case ARITH_ABS:
+  case FP_ISNAN_ATOM:
+  case FP_ISINF_ATOM:
+  case FP_ISZERO_ATOM:
+  case FP_ISSUBNORMAL_ATOM:
+  case FP_ISNORMAL_ATOM:
     fputc('(', f);
     fputs(tag2string[kind_for_idx(tbl, i)], f);
     fputc(' ', f);
@@ -1730,6 +1851,14 @@ static void print_term_idx_desc(FILE *f, term_table_t *tbl, int32_t i) {
   case BV_EQ_ATOM:
   case BV_GE_ATOM:
   case BV_SGE_ATOM:
+  case FP_ADD:
+  case FP_SUB:
+  case FP_MUL:
+  case FP_EQ_ATOM:
+  case FP_LT_ATOM:
+  case FP_LEQ_ATOM:
+  case FP_GT_ATOM:
+  case FP_GEQ_ATOM:
     // i's descriptor is a composite term
     print_composite(f, tbl, kind_for_idx(tbl, i), composite_for_idx(tbl, i));
     break;
@@ -1826,6 +1955,8 @@ static const pp_open_type_t term_kind2block[NUM_TERM_KINDS] = {
   0,                 //  ARITH_FF_CONSTANT
   0,                 //  BV64_CONSTANT
   0,                 //  BV_CONSTANT
+  0,                 //  ROUNDING_MODE_CONSTANT
+  0,                 //  FP_CONSTANT
 
   0,                 //  VARIABLE
   0,                 //  UNINTERPRETED_TERM
@@ -1872,6 +2003,20 @@ static const pp_open_type_t term_kind2block[NUM_TERM_KINDS] = {
   PP_OPEN_BV_GE,     //  BV_GE_ATOM
   PP_OPEN_BV_SGE,    //  BV_SGE_ATOM
 
+  0,                 //  FP_ADD
+  0,                 //  FP_SUB
+  0,                 //  FP_MUL
+  0,                 //  FP_EQ_ATOM
+  0,                 //  FP_LT_ATOM
+  0,                 //  FP_LEQ_ATOM
+  0,                 //  FP_GT_ATOM
+  0,                 //  FP_GEQ_ATOM
+  0,                 //  FP_ISNAN_ATOM
+  0,                 //  FP_ISINF_ATOM
+  0,                 //  FP_ISZERO_ATOM
+  0,                 //  FP_ISSUBNORMAL_ATOM
+  0,                 //  FP_ISNORMAL_ATOM
+
   PP_OPEN_SELECT,    //  SELECT_TERM
   PP_OPEN_BIT,       //  BIT_TERM
 
@@ -1897,6 +2042,17 @@ static void pp_term_recur(yices_pp_t *printer, term_table_t *tbl, term_t t, int3
 static void pp_composite_term(yices_pp_t *printer, term_table_t *tbl, term_kind_t tag, composite_term_t *d, int32_t level) {
   uint32_t i, n;
   pp_open_type_t op;
+
+  if (FP_ADD <= tag && tag <= FP_GEQ_ATOM) {
+    pp_open_block(printer, PP_OPEN_PAR);
+    pp_string(printer, tag2string[tag]);
+    n = d->arity;
+    for (i=0; i<n; i++) {
+      pp_term_recur(printer, tbl, d->arg[i], level, true);
+    }
+    pp_close_block(printer, true);
+    return;
+  }
 
   assert(ITE_TERM <= tag && tag <= BV_SGE_ATOM);
   op = term_kind2block[tag];
@@ -2349,6 +2505,52 @@ static void pp_bvconst64_term(yices_pp_t *printer, bvconst64_term_t *d) {
   pp_bv64(printer, d->value, d->bitsize);
 }
 
+static void pp_rounding_mode(yices_pp_t *printer, fp_rounding_mode_t mode) {
+  static const char * const names[] = { "RNE", "RNA", "RTN", "RTP", "RTZ" };
+
+  assert(mode <= FP_RTZ);
+  pp_string(printer, names[mode]);
+}
+
+static void pp_fpconst_term(yices_pp_t *printer, fp_const_t *d) {
+  switch (d->kind) {
+  case FP_VALUE_NAN:
+    pp_open_block(printer, PP_OPEN_PAR);
+    pp_string(printer, "_");
+    pp_string(printer, "NaN");
+    pp_uint32(printer, d->ebits);
+    pp_uint32(printer, d->sbits);
+    pp_close_block(printer, true);
+    break;
+  case FP_VALUE_POS_INF:
+  case FP_VALUE_NEG_INF:
+  case FP_VALUE_POS_ZERO:
+  case FP_VALUE_NEG_ZERO:
+    pp_open_block(printer, PP_OPEN_PAR);
+    pp_string(printer, "_");
+    pp_string(printer, d->kind == FP_VALUE_POS_INF ? "+oo" :
+                       d->kind == FP_VALUE_NEG_INF ? "-oo" :
+                       d->kind == FP_VALUE_POS_ZERO ? "+zero" : "-zero");
+    pp_uint32(printer, d->ebits);
+    pp_uint32(printer, d->sbits);
+    pp_close_block(printer, true);
+    break;
+  default:
+    {
+    char tmp[32];
+    pp_open_block(printer, PP_OPEN_PAR);
+    pp_string(printer, "fp");
+    pp_uint32(printer, d->sign ? 1u : 0u);
+    snprintf(tmp, sizeof(tmp), "0x%"PRIx64, d->exponent);
+    pp_string(printer, tmp);
+    snprintf(tmp, sizeof(tmp), "0x%"PRIx64, d->significand);
+    pp_string(printer, tmp);
+    pp_close_block(printer, true);
+    }
+    break;
+  }
+}
+
 static void pp_finitefield_term(yices_pp_t *printer, const rational_t *v, const rational_t *mod) {
   value_ff_t val;
   q_init(&val.mod);
@@ -2550,6 +2752,16 @@ static void pp_term_idx(yices_pp_t *printer, term_table_t *tbl, int32_t i, int32
     pp_bvconst_term(printer, bvconst_for_idx(tbl, i));
     break;
 
+  case ROUNDING_MODE_CONSTANT:
+    assert(polarity);
+    pp_rounding_mode(printer, (fp_rounding_mode_t) integer_value_for_idx(tbl, i));
+    break;
+
+  case FP_CONSTANT:
+    assert(polarity);
+    pp_fpconst_term(printer, ptr_for_idx(tbl, i));
+    break;
+
   case ARITH_EQ_ATOM:
   case ARITH_FF_EQ_ATOM:
     op = polarity ? PP_OPEN_EQ : PP_OPEN_NEQ;
@@ -2585,6 +2797,19 @@ static void pp_term_idx(yices_pp_t *printer, term_table_t *tbl, int32_t i, int32
     if (!polarity) pp_close_block(printer, true);
     break;
 
+  case FP_ISNAN_ATOM:
+  case FP_ISINF_ATOM:
+  case FP_ISZERO_ATOM:
+  case FP_ISSUBNORMAL_ATOM:
+  case FP_ISNORMAL_ATOM:
+    if (!polarity) pp_open_block(printer, PP_OPEN_NOT);
+    pp_open_block(printer, PP_OPEN_PAR);
+    pp_string(printer, tag2string[kind_for_idx(tbl, i)]);
+    pp_term_recur(printer, tbl, integer_value_for_idx(tbl, i), level - 1, true);
+    pp_close_block(printer, true);
+    if (!polarity) pp_close_block(printer, true);
+    break;
+
   case FORALL_TERM:
     pp_forall_term(printer, tbl, composite_for_idx(tbl, i), level - 1, polarity);
     break;
@@ -2603,8 +2828,18 @@ static void pp_term_idx(yices_pp_t *printer, term_table_t *tbl, int32_t i, int32
   case ARITH_BINEQ_ATOM:
   case ARITH_FF_BINEQ_ATOM:
   case BV_EQ_ATOM:
+  case FP_EQ_ATOM:
     op = polarity ? PP_OPEN_EQ : PP_OPEN_NEQ;
     pp_binary_atom(printer, tbl, op, composite_for_idx(tbl, i), level - 1);
+    break;
+
+  case FP_LT_ATOM:
+  case FP_LEQ_ATOM:
+  case FP_GT_ATOM:
+  case FP_GEQ_ATOM:
+    if (!polarity) pp_open_block(printer, PP_OPEN_NOT);
+    pp_composite_term(printer, tbl, kind_for_idx(tbl, i), composite_for_idx(tbl, i), level - 1);
+    if (!polarity) pp_close_block(printer, true);
     break;
 
   case BV_GE_ATOM:
@@ -2640,6 +2875,9 @@ static void pp_term_idx(yices_pp_t *printer, term_table_t *tbl, int32_t i, int32
   case BV_SHL:
   case BV_LSHR:
   case BV_ASHR:
+  case FP_ADD:
+  case FP_SUB:
+  case FP_MUL:
     // i's descriptor is a composite term
     if (! polarity) pp_open_block(printer, PP_OPEN_NOT);
     pp_composite_term(printer, tbl, kind_for_idx(tbl, i), composite_for_idx(tbl, i), level - 1);
@@ -2876,4 +3114,3 @@ void pretty_print_term_full(FILE *f, pp_area_t *area, term_table_t *tbl, term_t 
   flush_yices_pp(&printer);
   delete_yices_pp(&printer, false);
 }
-

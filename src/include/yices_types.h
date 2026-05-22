@@ -138,6 +138,8 @@ typedef enum term_constructor {
   YICES_FF_CONSTANT,         // finite-field constant
   YICES_ARITH_FF_CONSTANT = YICES_FF_CONSTANT, // compatibility alias
   YICES_BV_CONSTANT,         // bitvector constant
+  YICES_ROUNDING_MODE_CONSTANT, // IEEE-754 rounding mode constant
+  YICES_FP_CONSTANT,         // IEEE-754 floating-point constant
   YICES_SCALAR_CONSTANT,     // constant of uninterpreted/scalar
   YICES_VARIABLE,            // variable in quantifiers
   YICES_UNINTERPRETED_TERM,  // (i.e., global variables, can't be bound)
@@ -169,6 +171,19 @@ typedef enum term_constructor {
   YICES_ARITH_GE_ATOM,       // atom (t1 >= t2) for arithmetic terms: t2 is always 0
   YICES_ARITH_ROOT_ATOM,     // atom (0 <= k <= root_count(p)) && (x r root(p, k)) for r in <, <=, ==, !=, >, >=
 
+  YICES_FP_ADD,              // floating-point addition
+  YICES_FP_SUB,              // floating-point subtraction
+  YICES_FP_MUL,              // floating-point multiplication
+  YICES_FP_EQ_ATOM,          // floating-point equality
+  YICES_FP_LT_ATOM,          // floating-point less-than
+  YICES_FP_LEQ_ATOM,         // floating-point less-or-equal
+  YICES_FP_GT_ATOM,          // floating-point greater-than
+  YICES_FP_GEQ_ATOM,         // floating-point greater-or-equal
+  YICES_FP_ISNAN_ATOM,       // floating-point NaN predicate
+  YICES_FP_ISINF_ATOM,       // floating-point infinity predicate
+  YICES_FP_ISZERO_ATOM,      // floating-point zero predicate
+  YICES_FP_ISSUBNORMAL_ATOM, // floating-point subnormal predicate
+  YICES_FP_ISNORMAL_ATOM,    // floating-point normal predicate
 
   YICES_ABS,                 // absolute value
   YICES_CEIL,                // ceil

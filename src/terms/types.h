@@ -98,6 +98,8 @@ typedef enum {
   REAL_TYPE,
   FF_TYPE,
   BITVECTOR_TYPE,
+  ROUNDING_MODE_TYPE,
+  FP_TYPE,
   SCALAR_TYPE,
   UNINTERPRETED_TYPE,
   VARIABLE_TYPE,
@@ -131,6 +133,16 @@ typedef struct {
   uint32_t ndom;    // number of domain types
   type_t domain[0]; // domain[0] .. domain[ndom - 1]: domain types
 } function_type_t;
+
+/*
+ * Descriptor of a floating-point type:
+ * - ebits = exponent width
+ * - sbits = significand precision, including the hidden bit
+ */
+typedef struct {
+  uint32_t ebits;
+  uint32_t sbits;
+} fp_type_t;
 
 
 /*
@@ -489,6 +501,17 @@ static inline type_t real_type(type_table_t *table) {
 extern type_t bv_type(type_table_t *table, uint32_t size);
 
 /*
+ * RoundingMode type.
+ */
+extern type_t rounding_mode_type(type_table_t *table);
+
+/*
+ * FloatingPoint type (_ FloatingPoint ebits sbits)
+ * - ebits and sbits must both be positive.
+ */
+extern type_t fp_type(type_table_t *table, uint32_t ebits, uint32_t sbits);
+
+/*
  * FiniteFiled types
  * This requires order to be a positive prime
  */
@@ -841,6 +864,27 @@ static inline const rational_t* ff_type_size(type_table_t *tbl, type_t i) {
 static inline bool ff_type_size_any(type_table_t *tbl, type_t i) {
   assert(is_ff_type(tbl, i));
   return q_is_minus_one(type_desc(tbl, i)->ptr);
+}
+
+static inline bool is_rounding_mode_type(type_table_t *tbl, type_t i) {
+  return type_kind(tbl, i) == ROUNDING_MODE_TYPE;
+}
+
+static inline bool is_fp_type(type_table_t *tbl, type_t i) {
+  return type_kind(tbl, i) == FP_TYPE;
+}
+
+static inline fp_type_t *fp_type_desc(type_table_t *tbl, type_t i) {
+  assert(is_fp_type(tbl, i));
+  return type_desc(tbl, i)->ptr;
+}
+
+static inline uint32_t fp_type_ebits(type_table_t *tbl, type_t i) {
+  return fp_type_desc(tbl, i)->ebits;
+}
+
+static inline uint32_t fp_type_sbits(type_table_t *tbl, type_t i) {
+  return fp_type_desc(tbl, i)->sbits;
 }
 
 // uninterpreted types

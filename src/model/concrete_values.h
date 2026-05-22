@@ -52,6 +52,7 @@
 
 #include "terms/bv_constants.h"
 #include "terms/rationals.h"
+#include "terms/terms.h"
 #include "terms/types.h"
 #include "utils/bitvectors.h"
 #include "utils/int_hash_tables.h"
@@ -70,6 +71,8 @@
  *  RATIONAL_VALUE
  *  ALGEBRAIC_VALUE
  *  BITVECTOR_VALUE
+ *  ROUNDING_MODE_VALUE
+ *  FP_VALUE
  *  TUPLE_VALUE
  *  UNINTERPRETED_VALUE
  *  FUNCTION_VALUE
@@ -112,6 +115,8 @@ typedef enum {
   ALGEBRAIC_VALUE,
   FINITEFIELD_VALUE,
   BITVECTOR_VALUE,
+  ROUNDING_MODE_VALUE,
+  FP_VALUE,
   TUPLE_VALUE,
   UNINTERPRETED_VALUE,
   FUNCTION_VALUE,
@@ -148,6 +153,9 @@ typedef struct value_bv_s {
   uint32_t width;   // size in words = ceil(nbits/32)
   uint32_t data[0]; // real size = width
 } value_bv_t;
+
+// floating-point constant
+typedef fp_const_t value_fp_t;
 
 // tuple = array of values
 typedef struct value_tuple_s {
@@ -472,6 +480,12 @@ extern value_t vtbl_mk_bv_from_bv64(value_table_t *table, uint32_t n, uint64_t c
  */
 extern value_t vtbl_mk_bv_zero(value_table_t *table, uint32_t n);
 extern value_t vtbl_mk_bv_one(value_table_t *table, uint32_t n);
+
+/*
+ * Native rounding-mode and floating-point constants.
+ */
+extern value_t vtbl_mk_rounding_mode(value_table_t *table, fp_rounding_mode_t mode);
+extern value_t vtbl_mk_fp(value_table_t *table, const fp_const_t *fp);
 
 
 /*
@@ -865,6 +879,14 @@ static inline bool object_is_bitvector(value_table_t *table, value_t v) {
   return object_kind(table, v) == BITVECTOR_VALUE;
 }
 
+static inline bool object_is_rounding_mode(value_table_t *table, value_t v) {
+  return object_kind(table, v) == ROUNDING_MODE_VALUE;
+}
+
+static inline bool object_is_fp(value_table_t *table, value_t v) {
+  return object_kind(table, v) == FP_VALUE;
+}
+
 static inline bool object_is_tuple(value_table_t *table, value_t v) {
   return object_kind(table, v) == TUPLE_VALUE;
 }
@@ -940,6 +962,16 @@ static inline value_ff_t *vtbl_finitefield(value_table_t *table, value_t v) {
 static inline value_bv_t *vtbl_bitvector(value_table_t *table, value_t v) {
   assert(object_is_bitvector(table, v));
   return (value_bv_t *) table->desc[v].ptr;
+}
+
+static inline fp_rounding_mode_t vtbl_rounding_mode(value_table_t *table, value_t v) {
+  assert(object_is_rounding_mode(table, v));
+  return (fp_rounding_mode_t) table->desc[v].integer;
+}
+
+static inline value_fp_t *vtbl_fp(value_table_t *table, value_t v) {
+  assert(object_is_fp(table, v));
+  return (value_fp_t *) table->desc[v].ptr;
 }
 
 static inline value_tuple_t *vtbl_tuple(value_table_t *table, value_t v) {

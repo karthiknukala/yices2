@@ -1752,6 +1752,39 @@ static const uint8_t smt2_key[NUM_SMT2_SYMBOLS] = {
   SMT2_KEY_IDX_TYPE,     // SMT2_SYM_FINITEFIELD
   SMT2_KEY_TERM_OP,      // SMT2_SYM_FFADD
   SMT2_KEY_TERM_OP,      // SMT2_SYM_FFMUL
+  SMT2_KEY_TYPE,         // SMT2_SYM_ROUNDINGMODE
+  SMT2_KEY_TYPE,         // SMT2_SYM_FLOAT32
+  SMT2_KEY_TYPE,         // SMT2_SYM_FLOAT64
+  SMT2_KEY_IDX_TYPE,     // SMT2_SYM_FLOATINGPOINT
+  SMT2_KEY_TERM,         // SMT2_SYM_RNE
+  SMT2_KEY_TERM,         // SMT2_SYM_RNA
+  SMT2_KEY_TERM,         // SMT2_SYM_RTN
+  SMT2_KEY_TERM,         // SMT2_SYM_RTP
+  SMT2_KEY_TERM,         // SMT2_SYM_RTZ
+  SMT2_KEY_TERM,         // SMT2_SYM_ROUND_NEAREST_TIES_TO_EVEN
+  SMT2_KEY_TERM,         // SMT2_SYM_ROUND_NEAREST_TIES_TO_AWAY
+  SMT2_KEY_TERM,         // SMT2_SYM_ROUND_TOWARD_NEGATIVE
+  SMT2_KEY_TERM,         // SMT2_SYM_ROUND_TOWARD_POSITIVE
+  SMT2_KEY_TERM,         // SMT2_SYM_ROUND_TOWARD_ZERO
+  SMT2_KEY_IDX_TERM,     // SMT2_SYM_FP_NAN
+  SMT2_KEY_IDX_TERM,     // SMT2_SYM_FP_POS_INF
+  SMT2_KEY_IDX_TERM,     // SMT2_SYM_FP_NEG_INF
+  SMT2_KEY_IDX_TERM,     // SMT2_SYM_FP_POS_ZERO
+  SMT2_KEY_IDX_TERM,     // SMT2_SYM_FP_NEG_ZERO
+  SMT2_KEY_TERM_OP,      // SMT2_SYM_FP
+  SMT2_KEY_TERM_OP,      // SMT2_SYM_FP_ADD
+  SMT2_KEY_TERM_OP,      // SMT2_SYM_FP_SUB
+  SMT2_KEY_TERM_OP,      // SMT2_SYM_FP_MUL
+  SMT2_KEY_TERM_OP,      // SMT2_SYM_FP_EQ
+  SMT2_KEY_TERM_OP,      // SMT2_SYM_FP_LT
+  SMT2_KEY_TERM_OP,      // SMT2_SYM_FP_LEQ
+  SMT2_KEY_TERM_OP,      // SMT2_SYM_FP_GT
+  SMT2_KEY_TERM_OP,      // SMT2_SYM_FP_GEQ
+  SMT2_KEY_TERM_OP,      // SMT2_SYM_FP_ISNAN
+  SMT2_KEY_TERM_OP,      // SMT2_SYM_FP_ISINF
+  SMT2_KEY_TERM_OP,      // SMT2_SYM_FP_ISZERO
+  SMT2_KEY_TERM_OP,      // SMT2_SYM_FP_ISSUBNORMAL
+  SMT2_KEY_TERM_OP,      // SMT2_SYM_FP_ISNORMAL
   SMT2_KEY_ERROR_BV,     // SMT2_SYM_INVALID_BV_CONSTANT
   SMT2_KEY_UNKNOWN,      // SMT2_SYM_UNKNOWN
 };
@@ -1831,9 +1864,89 @@ static const int32_t smt2_val[NUM_SMT2_SYMBOLS] = {
   MK_FF_TYPE,            // SMT2_SYM_FINITEFIELD
   MK_FF_ADD,             // SMT2_SYM_FFADD
   MK_FF_MUL,             // SMT2_SYM_FFMUL
+  NO_OP,                 // SMT2_SYM_ROUNDINGMODE
+  NO_OP,                 // SMT2_SYM_FLOAT32
+  NO_OP,                 // SMT2_SYM_FLOAT64
+  SMT2_MK_FP_TYPE,       // SMT2_SYM_FLOATINGPOINT
+  NO_OP,                 // SMT2_SYM_RNE
+  NO_OP,                 // SMT2_SYM_RNA
+  NO_OP,                 // SMT2_SYM_RTN
+  NO_OP,                 // SMT2_SYM_RTP
+  NO_OP,                 // SMT2_SYM_RTZ
+  NO_OP,                 // SMT2_SYM_ROUND_NEAREST_TIES_TO_EVEN
+  NO_OP,                 // SMT2_SYM_ROUND_NEAREST_TIES_TO_AWAY
+  NO_OP,                 // SMT2_SYM_ROUND_TOWARD_NEGATIVE
+  NO_OP,                 // SMT2_SYM_ROUND_TOWARD_POSITIVE
+  NO_OP,                 // SMT2_SYM_ROUND_TOWARD_ZERO
+  SMT2_MK_FP_NAN,        // SMT2_SYM_FP_NAN
+  SMT2_MK_FP_POS_INF,    // SMT2_SYM_FP_POS_INF
+  SMT2_MK_FP_NEG_INF,    // SMT2_SYM_FP_NEG_INF
+  SMT2_MK_FP_POS_ZERO,   // SMT2_SYM_FP_POS_ZERO
+  SMT2_MK_FP_NEG_ZERO,   // SMT2_SYM_FP_NEG_ZERO
+  SMT2_MK_FP,            // SMT2_SYM_FP
+  SMT2_MK_FP_ADD,        // SMT2_SYM_FP_ADD
+  SMT2_MK_FP_SUB,        // SMT2_SYM_FP_SUB
+  SMT2_MK_FP_MUL,        // SMT2_SYM_FP_MUL
+  SMT2_MK_FP_EQ,         // SMT2_SYM_FP_EQ
+  SMT2_MK_FP_LT,         // SMT2_SYM_FP_LT
+  SMT2_MK_FP_LEQ,        // SMT2_SYM_FP_LEQ
+  SMT2_MK_FP_GT,         // SMT2_SYM_FP_GT
+  SMT2_MK_FP_GEQ,        // SMT2_SYM_FP_GEQ
+  SMT2_MK_FP_ISNAN,      // SMT2_SYM_FP_ISNAN
+  SMT2_MK_FP_ISINF,      // SMT2_SYM_FP_ISINF
+  SMT2_MK_FP_ISZERO,     // SMT2_SYM_FP_ISZERO
+  SMT2_MK_FP_ISSUBNORMAL,// SMT2_SYM_FP_ISSUBNORMAL
+  SMT2_MK_FP_ISNORMAL,   // SMT2_SYM_FP_ISNORMAL
   NO_OP,                 // SMT2_SYM_INVALID_BV_CONSTANT (ignored)
   NO_OP,                 // SMT2_SYM_UNKNOWN (ignored)
 };
+
+static bool smt2_symbol_is_rm(smt2_symbol_t s, fp_rounding_mode_t *mode) {
+  switch (s) {
+  case SMT2_SYM_RNE:
+  case SMT2_SYM_ROUND_NEAREST_TIES_TO_EVEN:
+    *mode = FP_RNE;
+    return true;
+  case SMT2_SYM_RNA:
+  case SMT2_SYM_ROUND_NEAREST_TIES_TO_AWAY:
+    *mode = FP_RNA;
+    return true;
+  case SMT2_SYM_RTN:
+  case SMT2_SYM_ROUND_TOWARD_NEGATIVE:
+    *mode = FP_RTN;
+    return true;
+  case SMT2_SYM_RTP:
+  case SMT2_SYM_ROUND_TOWARD_POSITIVE:
+    *mode = FP_RTP;
+    return true;
+  case SMT2_SYM_RTZ:
+  case SMT2_SYM_ROUND_TOWARD_ZERO:
+    *mode = FP_RTZ;
+    return true;
+  default:
+    return false;
+  }
+}
+
+static bool smt2_fp_rounding_mode_is_supported(fp_rounding_mode_t mode) {
+  return mode == FP_RTN || mode == FP_RTP || mode == FP_RTZ;
+}
+
+static bool smt2_symbol_is_fp_sort_alias(smt2_symbol_t s, type_t *tau) {
+  switch (s) {
+  case SMT2_SYM_ROUNDINGMODE:
+    *tau = rounding_mode_type(__yices_globals.types);
+    return true;
+  case SMT2_SYM_FLOAT32:
+    *tau = fp_type(__yices_globals.types, 8, 24);
+    return true;
+  case SMT2_SYM_FLOAT64:
+    *tau = fp_type(__yices_globals.types, 11, 53);
+    return true;
+  default:
+    return false;
+  }
+}
 
 
 /*
@@ -1847,7 +1960,14 @@ void tstack_push_sort_name(tstack_t *stack, char *s, uint32_t n, loc_t *loc) {
   key = smt2_key[symbol];
   switch (key) {
   case SMT2_KEY_TYPE:
-    tstack_push_type(stack, smt2_val[symbol], loc);
+    {
+      type_t tau;
+      if (smt2_symbol_is_fp_sort_alias(symbol, &tau)) {
+        tstack_push_type(stack, tau, loc);
+      } else {
+        tstack_push_type(stack, smt2_val[symbol], loc);
+      }
+    }
     break;
 
   case SMT2_KEY_TYPE_OP:
@@ -1985,7 +2105,14 @@ void tstack_push_term_name(tstack_t *stack, char *s, uint32_t n, loc_t *loc) {
   key = smt2_key[symbol];
   switch (key) {
   case SMT2_KEY_TERM:
-    tstack_push_term(stack, smt2_val[symbol], loc);
+    {
+      fp_rounding_mode_t mode;
+      if (smt2_symbol_is_rm(symbol, &mode)) {
+        tstack_push_term(stack, rounding_mode_constant(__yices_globals.terms, mode), loc);
+      } else {
+        tstack_push_term(stack, smt2_val[symbol], loc);
+      }
+    }
     break;
 
   case SMT2_KEY_IDX_FF:
@@ -2333,6 +2460,206 @@ static void eval_smt2_mk_store(tstack_t *stack, stack_elem_t *f, uint32_t n) {
   t = yices_update(array, 1, &index, value);
   check_term(stack, t);
 
+  tstack_pop_frame(stack);
+  set_term_result(stack, t);
+}
+
+
+/*
+ * FLOATING-POINT THEORY
+ */
+static void check_smt2_mk_fp_type(tstack_t *stack, stack_elem_t *f, uint32_t n) {
+  check_op(stack, SMT2_MK_FP_TYPE);
+  check_size(stack, n == 2);
+  check_tag(stack, f, TAG_RATIONAL);
+  check_tag(stack, f+1, TAG_RATIONAL);
+}
+
+static void eval_smt2_mk_fp_type(tstack_t *stack, stack_elem_t *f, uint32_t n) {
+  int32_t ebits, sbits;
+  type_t tau;
+
+  ebits = get_integer(stack, f);
+  sbits = get_integer(stack, f+1);
+  if (ebits <= 1 || sbits <= 1) {
+    raise_exception(stack, f, TSTACK_INVALID_FFSIZE);
+  }
+  tau = fp_type(__yices_globals.types, (uint32_t) ebits, (uint32_t) sbits);
+  tstack_pop_frame(stack);
+  set_type_result(stack, tau);
+}
+
+static void check_smt2_mk_fp_special(tstack_t *stack, stack_elem_t *f, uint32_t n) {
+  check_size(stack, n == 2);
+  check_tag(stack, f, TAG_RATIONAL);
+  check_tag(stack, f+1, TAG_RATIONAL);
+}
+
+static void eval_smt2_mk_fp_special(tstack_t *stack, stack_elem_t *f, uint32_t n) {
+  int32_t ebits, sbits;
+  fp_value_kind_t kind;
+  term_t t;
+
+  ebits = get_integer(stack, f);
+  sbits = get_integer(stack, f+1);
+  if (ebits <= 1 || sbits <= 1) {
+    raise_exception(stack, f, TSTACK_INVALID_FFSIZE);
+  }
+
+  switch (f[-1].val.opval.opcode) {
+  case SMT2_MK_FP_NAN: kind = FP_VALUE_NAN; break;
+  case SMT2_MK_FP_POS_INF: kind = FP_VALUE_POS_INF; break;
+  case SMT2_MK_FP_NEG_INF: kind = FP_VALUE_NEG_INF; break;
+  case SMT2_MK_FP_POS_ZERO: kind = FP_VALUE_POS_ZERO; break;
+  case SMT2_MK_FP_NEG_ZERO: kind = FP_VALUE_NEG_ZERO; break;
+  default:
+    raise_exception(stack, f - 1, TSTACK_INTERNAL_ERROR);
+    return;
+  }
+
+  t = fp_special_constant(__yices_globals.terms, (uint32_t) ebits, (uint32_t) sbits, kind);
+  tstack_pop_frame(stack);
+  set_term_result(stack, t);
+}
+
+static bool smt2_bv_const_to_uint64(term_table_t *terms, term_t t, uint64_t *out) {
+  bvconst_term_t *bv;
+
+  switch (term_kind(terms, t)) {
+  case BV64_CONSTANT:
+    *out = bvconst64_term_desc(terms, t)->value;
+    return true;
+  case BV_CONSTANT:
+    bv = bvconst_term_desc(terms, t);
+    if (bv->bitsize > 64) {
+      return false;
+    }
+    *out = bv->data[0];
+    if (bv->bitsize > 32) {
+      *out |= ((uint64_t) bv->data[1]) << 32;
+    }
+    return true;
+  default:
+    return false;
+  }
+}
+
+static void check_smt2_mk_fp(tstack_t *stack, stack_elem_t *f, uint32_t n) {
+  check_op(stack, SMT2_MK_FP);
+  check_size(stack, n == 3);
+}
+
+static void eval_smt2_mk_fp(tstack_t *stack, stack_elem_t *f, uint32_t n) {
+  term_table_t *terms;
+  term_t sign, exponent, significand, t;
+  uint64_t sign_bits, exponent_bits, significand_bits;
+  uint32_t ebits, sbits;
+
+  terms = __yices_globals.terms;
+  sign = get_term(stack, f);
+  exponent = get_term(stack, f+1);
+  significand = get_term(stack, f+2);
+  if (!is_bv_type(__yices_globals.types, term_type(terms, sign)) ||
+      !is_bv_type(__yices_globals.types, term_type(terms, exponent)) ||
+      !is_bv_type(__yices_globals.types, term_type(terms, significand))) {
+    raise_exception(stack, f, TSTACK_INVALID_OP);
+  }
+  if (term_bitsize(terms, sign) != 1 ||
+      !smt2_bv_const_to_uint64(terms, sign, &sign_bits) ||
+      !smt2_bv_const_to_uint64(terms, exponent, &exponent_bits) ||
+      !smt2_bv_const_to_uint64(terms, significand, &significand_bits)) {
+    raise_exception(stack, f, TSTACK_OP_NOT_IMPLEMENTED);
+  }
+  ebits = term_bitsize(terms, exponent);
+  sbits = term_bitsize(terms, significand) + 1;
+  t = fp_bitpattern_constant(terms, ebits, sbits, sign_bits != 0, exponent_bits, significand_bits);
+
+  tstack_pop_frame(stack);
+  set_term_result(stack, t);
+}
+
+static void check_smt2_mk_fp_binary(tstack_t *stack, stack_elem_t *f, uint32_t n) {
+  check_size(stack, n == 3);
+}
+
+static void eval_smt2_mk_fp_binary(tstack_t *stack, stack_elem_t *f, uint32_t n) {
+  term_table_t *terms;
+  term_t rm, a, b, t;
+
+  terms = __yices_globals.terms;
+  rm = get_term(stack, f);
+  a = get_term(stack, f+1);
+  b = get_term(stack, f+2);
+  if (!is_rounding_mode_term(terms, rm) ||
+      !is_fp_term(terms, a) ||
+      term_type(terms, a) != term_type(terms, b)) {
+    raise_exception(stack, f, TSTACK_INVALID_OP);
+  }
+  if (term_kind(terms, rm) == ROUNDING_MODE_CONSTANT &&
+      !smt2_fp_rounding_mode_is_supported(rounding_mode_term_desc(terms, rm))) {
+    raise_exception(stack, f, TSTACK_OP_NOT_IMPLEMENTED);
+  }
+
+  switch (f[-1].val.opval.opcode) {
+  case SMT2_MK_FP_ADD: t = fp_add_term(terms, rm, a, b); break;
+  case SMT2_MK_FP_SUB: t = fp_sub_term(terms, rm, a, b); break;
+  case SMT2_MK_FP_MUL: t = fp_mul_term(terms, rm, a, b); break;
+  default:
+    raise_exception(stack, f - 1, TSTACK_INTERNAL_ERROR);
+    return;
+  }
+  tstack_pop_frame(stack);
+  set_term_result(stack, t);
+}
+
+static void check_smt2_mk_fp_compare(tstack_t *stack, stack_elem_t *f, uint32_t n) {
+  check_size(stack, n == 2);
+}
+
+static void eval_smt2_mk_fp_compare(tstack_t *stack, stack_elem_t *f, uint32_t n) {
+  term_t a, b, t;
+
+  a = get_term(stack, f);
+  b = get_term(stack, f+1);
+  if (!is_fp_term(__yices_globals.terms, a) ||
+      term_type(__yices_globals.terms, a) != term_type(__yices_globals.terms, b)) {
+    raise_exception(stack, f, TSTACK_INVALID_OP);
+  }
+  switch (f[-1].val.opval.opcode) {
+  case SMT2_MK_FP_EQ: t = fp_eq_atom(__yices_globals.terms, a, b); break;
+  case SMT2_MK_FP_LT: t = fp_lt_atom(__yices_globals.terms, a, b); break;
+  case SMT2_MK_FP_LEQ: t = fp_leq_atom(__yices_globals.terms, a, b); break;
+  case SMT2_MK_FP_GT: t = fp_gt_atom(__yices_globals.terms, a, b); break;
+  case SMT2_MK_FP_GEQ: t = fp_geq_atom(__yices_globals.terms, a, b); break;
+  default:
+    raise_exception(stack, f - 1, TSTACK_INTERNAL_ERROR);
+    return;
+  }
+  tstack_pop_frame(stack);
+  set_term_result(stack, t);
+}
+
+static void check_smt2_mk_fp_predicate(tstack_t *stack, stack_elem_t *f, uint32_t n) {
+  check_size(stack, n == 1);
+}
+
+static void eval_smt2_mk_fp_predicate(tstack_t *stack, stack_elem_t *f, uint32_t n) {
+  term_t a, t;
+
+  a = get_term(stack, f);
+  if (!is_fp_term(__yices_globals.terms, a)) {
+    raise_exception(stack, f, TSTACK_INVALID_OP);
+  }
+  switch (f[-1].val.opval.opcode) {
+  case SMT2_MK_FP_ISNAN: t = fp_isnan_atom(__yices_globals.terms, a); break;
+  case SMT2_MK_FP_ISINF: t = fp_isinf_atom(__yices_globals.terms, a); break;
+  case SMT2_MK_FP_ISZERO: t = fp_iszero_atom(__yices_globals.terms, a); break;
+  case SMT2_MK_FP_ISSUBNORMAL: t = fp_issubnormal_atom(__yices_globals.terms, a); break;
+  case SMT2_MK_FP_ISNORMAL: t = fp_isnormal_atom(__yices_globals.terms, a); break;
+  default:
+    raise_exception(stack, f - 1, TSTACK_INTERNAL_ERROR);
+    return;
+  }
   tstack_pop_frame(stack);
   set_term_result(stack, t);
 }
@@ -2742,5 +3069,25 @@ void init_smt2_tstack(tstack_t *stack) {
   tstack_add_op(stack, SMT2_MK_TO_INT, false, eval_smt2_to_int, check_smt2_to_int);
   tstack_add_op(stack, SMT2_MK_IS_INT, false, eval_smt2_is_int, check_smt2_is_int);
   tstack_add_op(stack, SMT2_MK_DIVISIBLE, false, eval_smt2_divisible, check_smt2_divisible);
+  tstack_add_op(stack, SMT2_MK_FP_TYPE, false, eval_smt2_mk_fp_type, check_smt2_mk_fp_type);
+  tstack_add_op(stack, SMT2_MK_FP_NAN, false, eval_smt2_mk_fp_special, check_smt2_mk_fp_special);
+  tstack_add_op(stack, SMT2_MK_FP_POS_INF, false, eval_smt2_mk_fp_special, check_smt2_mk_fp_special);
+  tstack_add_op(stack, SMT2_MK_FP_NEG_INF, false, eval_smt2_mk_fp_special, check_smt2_mk_fp_special);
+  tstack_add_op(stack, SMT2_MK_FP_POS_ZERO, false, eval_smt2_mk_fp_special, check_smt2_mk_fp_special);
+  tstack_add_op(stack, SMT2_MK_FP_NEG_ZERO, false, eval_smt2_mk_fp_special, check_smt2_mk_fp_special);
+  tstack_add_op(stack, SMT2_MK_FP, false, eval_smt2_mk_fp, check_smt2_mk_fp);
+  tstack_add_op(stack, SMT2_MK_FP_ADD, false, eval_smt2_mk_fp_binary, check_smt2_mk_fp_binary);
+  tstack_add_op(stack, SMT2_MK_FP_SUB, false, eval_smt2_mk_fp_binary, check_smt2_mk_fp_binary);
+  tstack_add_op(stack, SMT2_MK_FP_MUL, false, eval_smt2_mk_fp_binary, check_smt2_mk_fp_binary);
+  tstack_add_op(stack, SMT2_MK_FP_EQ, false, eval_smt2_mk_fp_compare, check_smt2_mk_fp_compare);
+  tstack_add_op(stack, SMT2_MK_FP_LT, false, eval_smt2_mk_fp_compare, check_smt2_mk_fp_compare);
+  tstack_add_op(stack, SMT2_MK_FP_LEQ, false, eval_smt2_mk_fp_compare, check_smt2_mk_fp_compare);
+  tstack_add_op(stack, SMT2_MK_FP_GT, false, eval_smt2_mk_fp_compare, check_smt2_mk_fp_compare);
+  tstack_add_op(stack, SMT2_MK_FP_GEQ, false, eval_smt2_mk_fp_compare, check_smt2_mk_fp_compare);
+  tstack_add_op(stack, SMT2_MK_FP_ISNAN, false, eval_smt2_mk_fp_predicate, check_smt2_mk_fp_predicate);
+  tstack_add_op(stack, SMT2_MK_FP_ISINF, false, eval_smt2_mk_fp_predicate, check_smt2_mk_fp_predicate);
+  tstack_add_op(stack, SMT2_MK_FP_ISZERO, false, eval_smt2_mk_fp_predicate, check_smt2_mk_fp_predicate);
+  tstack_add_op(stack, SMT2_MK_FP_ISSUBNORMAL, false, eval_smt2_mk_fp_predicate, check_smt2_mk_fp_predicate);
+  tstack_add_op(stack, SMT2_MK_FP_ISNORMAL, false, eval_smt2_mk_fp_predicate, check_smt2_mk_fp_predicate);
   tstack_add_op(stack, MK_DIVISION, false, eval_smt2_mk_division, check_smt2_mk_division);
 }

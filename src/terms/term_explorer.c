@@ -33,6 +33,8 @@ static const uint8_t atomic_term_flag[NUM_TERM_KINDS] = {
   true,  // ARITH_FF_CONSTANT
   true,  // BV64_CONSTANT
   true,  // BV_CONSTANT
+  true,  // ROUNDING_MODE_CONSTANT
+  true,  // FP_CONSTANT
   true,  // VARIABLE
   true,  // UNINTERPRETED_TERM
   false, // ARITH_EQ_ATOM
@@ -72,6 +74,19 @@ static const uint8_t atomic_term_flag[NUM_TERM_KINDS] = {
   false, // BV_EQ_ATOM
   false, // BV_GE_ATOM
   false, // BV_SGE_ATOM
+  false, // FP_ADD
+  false, // FP_SUB
+  false, // FP_MUL
+  false, // FP_EQ_ATOM
+  false, // FP_LT_ATOM
+  false, // FP_LEQ_ATOM
+  false, // FP_GT_ATOM
+  false, // FP_GEQ_ATOM
+  false, // FP_ISNAN_ATOM
+  false, // FP_ISINF_ATOM
+  false, // FP_ISZERO_ATOM
+  false, // FP_ISSUBNORMAL_ATOM
+  false, // FP_ISNORMAL_ATOM
   false, // SELECT_TERM
   false, // BIT_TERM
   false, // POWER_PRODUCT
@@ -89,6 +104,8 @@ static const uint8_t composite_term_flag[NUM_TERM_KINDS] = {
   false, // ARITH_FF_CONSTANT
   false, // BV64_CONSTANT
   false, // BV_CONSTANT
+  false, // ROUNDING_MODE_CONSTANT
+  false, // FP_CONSTANT
   false, // VARIABLE
   false, // UNINTERPRETED_TERM
   true,  // ARITH_EQ_ATOM
@@ -128,6 +145,19 @@ static const uint8_t composite_term_flag[NUM_TERM_KINDS] = {
   true,  // BV_EQ_ATOM
   true,  // BV_GE_ATOM
   true,  // BV_SGE_ATOM
+  true,  // FP_ADD
+  true,  // FP_SUB
+  true,  // FP_MUL
+  true,  // FP_EQ_ATOM
+  true,  // FP_LT_ATOM
+  true,  // FP_LEQ_ATOM
+  true,  // FP_GT_ATOM
+  true,  // FP_GEQ_ATOM
+  true,  // FP_ISNAN_ATOM
+  true,  // FP_ISINF_ATOM
+  true,  // FP_ISZERO_ATOM
+  true,  // FP_ISSUBNORMAL_ATOM
+  true,  // FP_ISNORMAL_ATOM
   false, // SELECT_TERM
   false, // BIT_TERM
   false, // POWER_PRODUCT
@@ -146,6 +176,8 @@ static const term_constructor_t constructor_term_table[NUM_TERM_KINDS] = {
   YICES_FF_CONSTANT,        // ARITH_FF_CONSTANT
   YICES_BV_CONSTANT,        // BV64_CONSTANT
   YICES_BV_CONSTANT,        // BV_CONSTANT
+  YICES_ROUNDING_MODE_CONSTANT, // ROUNDING_MODE_CONSTANT
+  YICES_FP_CONSTANT,        // FP_CONSTANT
   YICES_VARIABLE,           // VARIABLE
   YICES_UNINTERPRETED_TERM, // UNINTERPRETED_TERM
   YICES_EQ_TERM,            // ARITH_EQ_ATOM
@@ -185,6 +217,19 @@ static const term_constructor_t constructor_term_table[NUM_TERM_KINDS] = {
   YICES_EQ_TERM,            // BV_EQ_ATOM
   YICES_BV_GE_ATOM,         // BV_GE_ATOM
   YICES_BV_SGE_ATOM,        // BV_SGE_ATOM
+  YICES_FP_ADD,             // FP_ADD
+  YICES_FP_SUB,             // FP_SUB
+  YICES_FP_MUL,             // FP_MUL
+  YICES_FP_EQ_ATOM,         // FP_EQ_ATOM
+  YICES_FP_LT_ATOM,         // FP_LT_ATOM
+  YICES_FP_LEQ_ATOM,        // FP_LEQ_ATOM
+  YICES_FP_GT_ATOM,         // FP_GT_ATOM
+  YICES_FP_GEQ_ATOM,        // FP_GEQ_ATOM
+  YICES_FP_ISNAN_ATOM,      // FP_ISNAN_ATOM
+  YICES_FP_ISINF_ATOM,      // FP_ISINF_ATOM
+  YICES_FP_ISZERO_ATOM,     // FP_ISZERO_ATOM
+  YICES_FP_ISSUBNORMAL_ATOM,// FP_ISSUBNORMAL_ATOM
+  YICES_FP_ISNORMAL_ATOM,   // FP_ISNORMAL_ATOM
   YICES_SELECT_TERM,        // SELECT_TERM
   YICES_BIT_TERM,           // BIT_TERM
   YICES_POWER_PRODUCT,      // POWER_PRODUCT
@@ -319,6 +364,8 @@ uint32_t term_num_children(term_table_t *table, term_t t) {
     case ARITH_FF_CONSTANT:
     case BV64_CONSTANT:
     case BV_CONSTANT:
+    case ROUNDING_MODE_CONSTANT:
+    case FP_CONSTANT:
     case VARIABLE:
     case UNINTERPRETED_TERM:
       result = 0;
@@ -374,7 +421,23 @@ uint32_t term_num_children(term_table_t *table, term_t t) {
     case BV_EQ_ATOM:
     case BV_GE_ATOM:
     case BV_SGE_ATOM:
+    case FP_ADD:
+    case FP_SUB:
+    case FP_MUL:
+    case FP_EQ_ATOM:
+    case FP_LT_ATOM:
+    case FP_LEQ_ATOM:
+    case FP_GT_ATOM:
+    case FP_GEQ_ATOM:
       result = composite_term_arity(table, t);      
+      break;
+
+    case FP_ISNAN_ATOM:
+    case FP_ISINF_ATOM:
+    case FP_ISZERO_ATOM:
+    case FP_ISSUBNORMAL_ATOM:
+    case FP_ISNORMAL_ATOM:
+      result = 1;
       break;
 
     case SELECT_TERM:
@@ -453,6 +516,11 @@ term_t term_child(term_table_t *table, term_t t, uint32_t i) {
     case ARITH_FLOOR:
     case ARITH_CEIL:
     case ARITH_ABS:
+    case FP_ISNAN_ATOM:
+    case FP_ISINF_ATOM:
+    case FP_ISZERO_ATOM:
+    case FP_ISSUBNORMAL_ATOM:
+    case FP_ISNORMAL_ATOM:
       assert(i == 0);
       result = unary_term_arg(table, t);
       break;
@@ -504,6 +572,11 @@ void get_term_children(term_table_t *table, term_t t, ivector_t *v) {
     case ARITH_FLOOR:
     case ARITH_CEIL:
     case ARITH_ABS:
+    case FP_ISNAN_ATOM:
+    case FP_ISINF_ATOM:
+    case FP_ISZERO_ATOM:
+    case FP_ISSUBNORMAL_ATOM:
+    case FP_ISNORMAL_ATOM:
       ivector_push(v, unary_term_arg(table, t));
       break;
 
@@ -684,4 +757,3 @@ int32_t generic_const_value(term_table_t *table, term_t t) {
   assert(is_pos_term(t) && t != true_term);
   return constant_term_index(table, t);
 }
-

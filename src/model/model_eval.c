@@ -27,6 +27,9 @@
 #include "terms/bv64_constants.h"
 
 #ifdef HAVE_MCSAT
+#include "mcsat/fp/fp_dyadic.h"
+#include "mcsat/fp/fp_round.h"
+#include "mcsat/fp/fp_value.h"
 #include "poly/rational.h"
 #include "poly/algebraic_number.h"
 #endif
@@ -207,6 +210,172 @@ static value_t eval_bv64_constant(evaluator_t *eval, bvconst64_term_t *c) {
 static value_t eval_bv_constant(evaluator_t *eval, bvconst_term_t *c) {
   return vtbl_mk_bv_from_bv(eval->vtbl, c->bitsize, c->data);
 }
+
+#ifdef HAVE_MCSAT
+static fp_const_t *eval_get_fp(evaluator_t *eval, value_t v) {
+  if (!object_is_fp(eval->vtbl, v)) {
+    longjmp(eval->env, MDL_EVAL_FAILED);
+  }
+  return vtbl_fp(eval->vtbl, v);
+}
+
+static fp_rounding_mode_t eval_get_rounding_mode(evaluator_t *eval, value_t v) {
+  if (!object_is_rounding_mode(eval->vtbl, v)) {
+    longjmp(eval->env, MDL_EVAL_FAILED);
+  }
+  return vtbl_rounding_mode(eval->vtbl, v);
+}
+
+static bool eval_fp_inf_add(term_kind_t kind, const fp_const_t *a, const fp_const_t *b, fp_const_t *out) {
+  bool sign_b;
+
+  sign_b = kind == FP_SUB ? !b->sign : b->sign;
+  if (fp_value_is_infinite(a) && fp_value_is_infinite(b)) {
+    if (a->sign == sign_b) {
+      fp_value_make_inf(out, a->ebits, a->sbits, a->sign);
+    } else {
+      fp_value_make_nan(out, a->ebits, a->sbits);
+    }
+    return true;
+  }
+  if (fp_value_is_infinite(a)) {
+    fp_value_make_inf(out, a->ebits, a->sbits, a->sign);
+    return true;
+  }
+  if (fp_value_is_infinite(b)) {
+    fp_value_make_inf(out, a->ebits, a->sbits, sign_b);
+    return true;
+  }
+  return false;
+}
+
+static value_t eval_fp_binary(evaluator_t *eval, composite_term_t *app, term_kind_t kind) {
+  fp_const_t *a;
+  fp_const_t *b;
+  fp_const_t out;
+  fp_rounding_mode_t mode;
+  fp_dyadic_t da;
+  fp_dyadic_t db;
+  fp_dyadic_t dr;
+  bool ok;
+
+  mode = eval_get_rounding_mode(eval, eval_term(eval, app->arg[0]));
+  if (!fp_rounding_mode_is_directed(mode)) {
+    longjmp(eval->env, MDL_EVAL_FAILED);
+  }
+  a = eval_get_fp(eval, eval_term(eval, app->arg[1]));
+  b = eval_get_fp(eval, eval_term(eval, app->arg[2]));
+
+  if (fp_value_is_nan(a) || fp_value_is_nan(b)) {
+    fp_value_make_nan(&out, a->ebits, a->sbits);
+    return vtbl_mk_fp(eval->vtbl, &out);
+  }
+
+  if (kind == FP_ADD || kind == FP_SUB) {
+    if (eval_fp_inf_add(kind, a, b, &out)) {
+      return vtbl_mk_fp(eval->vtbl, &out);
+    }
+  } else {
+    assert(kind == FP_MUL);
+    if ((fp_value_is_zero(a) && fp_value_is_infinite(b)) ||
+        (fp_value_is_infinite(a) && fp_value_is_zero(b))) {
+      fp_value_make_nan(&out, a->ebits, a->sbits);
+      return vtbl_mk_fp(eval->vtbl, &out);
+    }
+    if (fp_value_is_infinite(a) || fp_value_is_infinite(b)) {
+      fp_value_make_inf(&out, a->ebits, a->sbits, a->sign ^ b->sign);
+      return vtbl_mk_fp(eval->vtbl, &out);
+    }
+  }
+
+  fp_dyadic_init(&da);
+  fp_dyadic_init(&db);
+  fp_dyadic_init(&dr);
+  ok = fp_value_to_dyadic(a, &da) && fp_value_to_dyadic(b, &db);
+  if (ok) {
+    if (kind == FP_ADD) {
+      fp_dyadic_add(&dr, &da, &db);
+    } else if (kind == FP_SUB) {
+      fp_dyadic_sub(&dr, &da, &db);
+    } else {
+      fp_dyadic_mul(&dr, &da, &db);
+    }
+    ok = fp_round_dyadic(&out, a->ebits, a->sbits, mode, &dr);
+  }
+  fp_dyadic_destruct(&dr);
+  fp_dyadic_destruct(&db);
+  fp_dyadic_destruct(&da);
+
+  if (!ok) {
+    longjmp(eval->env, MDL_EVAL_FAILED);
+  }
+  return vtbl_mk_fp(eval->vtbl, &out);
+}
+
+static value_t eval_fp_compare(evaluator_t *eval, composite_term_t *app, term_kind_t kind) {
+  fp_const_t *a;
+  fp_const_t *b;
+  int cmp;
+  bool result;
+
+  a = eval_get_fp(eval, eval_term(eval, app->arg[0]));
+  b = eval_get_fp(eval, eval_term(eval, app->arg[1]));
+  if (fp_value_is_nan(a) || fp_value_is_nan(b)) {
+    result = false;
+  } else {
+    cmp = fp_value_cmp(a, b);
+    switch (kind) {
+    case FP_EQ_ATOM:
+      result = cmp == 0;
+      break;
+    case FP_LT_ATOM:
+      result = cmp < 0;
+      break;
+    case FP_LEQ_ATOM:
+      result = cmp <= 0;
+      break;
+    case FP_GT_ATOM:
+      result = cmp > 0;
+      break;
+    case FP_GEQ_ATOM:
+      result = cmp >= 0;
+      break;
+    default:
+      assert(false);
+      longjmp(eval->env, MDL_EVAL_INTERNAL_ERROR);
+    }
+  }
+  return vtbl_mk_bool(eval->vtbl, result);
+}
+
+static value_t eval_fp_predicate(evaluator_t *eval, term_t arg, term_kind_t kind) {
+  fp_const_t *a;
+  bool result;
+
+  a = eval_get_fp(eval, eval_term(eval, arg));
+  switch (kind) {
+  case FP_ISNAN_ATOM:
+    result = fp_value_is_nan(a);
+    break;
+  case FP_ISINF_ATOM:
+    result = fp_value_is_infinite(a);
+    break;
+  case FP_ISZERO_ATOM:
+    result = fp_value_is_zero(a);
+    break;
+  case FP_ISSUBNORMAL_ATOM:
+    result = fp_value_is_subnormal(a);
+    break;
+  case FP_ISNORMAL_ATOM:
+    result = fp_value_is_normal(a);
+    break;
+  default:
+    assert(false);
+    longjmp(eval->env, MDL_EVAL_INTERNAL_ERROR);
+  }
+  return vtbl_mk_bool(eval->vtbl, result);
+}
+#endif
 
 
 /*
@@ -1684,6 +1853,14 @@ static value_t eval_term(evaluator_t *eval, term_t t) {
         v = eval_bv_constant(eval, bvconst_term_desc(terms, t));
         break;
 
+      case ROUNDING_MODE_CONSTANT:
+        v = vtbl_mk_rounding_mode(eval->vtbl, rounding_mode_term_desc(terms, t));
+        break;
+
+      case FP_CONSTANT:
+        v = vtbl_mk_fp(eval->vtbl, fp_const_term_desc(terms, t));
+        break;
+
       case VARIABLE:
         // free variable
         longjmp(eval->env, MDL_EVAL_FREEVAR_IN_TERM);
@@ -1846,6 +2023,30 @@ static value_t eval_term(evaluator_t *eval, term_t t) {
       case BV_SGE_ATOM:
         v = eval_bvsge(eval, bvsge_atom_desc(terms, t));
         break;
+
+#ifdef HAVE_MCSAT
+      case FP_ADD:
+      case FP_SUB:
+      case FP_MUL:
+        v = eval_fp_binary(eval, composite_term_desc(terms, t), t_kind);
+        break;
+
+      case FP_EQ_ATOM:
+      case FP_LT_ATOM:
+      case FP_LEQ_ATOM:
+      case FP_GT_ATOM:
+      case FP_GEQ_ATOM:
+        v = eval_fp_compare(eval, composite_term_desc(terms, t), t_kind);
+        break;
+
+      case FP_ISNAN_ATOM:
+      case FP_ISINF_ATOM:
+      case FP_ISZERO_ATOM:
+      case FP_ISSUBNORMAL_ATOM:
+      case FP_ISNORMAL_ATOM:
+        v = eval_fp_predicate(eval, unary_term_arg(terms, t), t_kind);
+        break;
+#endif
 
       case SELECT_TERM:
         v = eval_select(eval, select_term_desc(terms, t));

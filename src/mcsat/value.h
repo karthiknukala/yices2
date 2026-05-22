@@ -40,7 +40,11 @@ typedef enum {
   /** A value from the libpoly library */
   VALUE_LIBPOLY,
   /** A bitvector value */
-  VALUE_BV
+  VALUE_BV,
+  /** An IEEE-754 rounding mode value */
+  VALUE_ROUNDING_MODE,
+  /** An IEEE-754 floating-point value */
+  VALUE_FP
 } mcsat_value_type_t;
 
 struct mcsat_value_s {
@@ -50,6 +54,8 @@ struct mcsat_value_s {
     rational_t q;
     lp_value_t lp_value;
     bvconstant_t bv_value;
+    fp_rounding_mode_t rm_value;
+    fp_const_t fp_value;
   };
 };
 
@@ -80,6 +86,12 @@ void mcsat_value_construct_lp_value_direct(mcsat_value_t *value, lp_value_type_t
 /** Construct a bv value. Passing NULL for bv_value will leave the bvconstant default-initialized. */
 void mcsat_value_construct_bv_value(mcsat_value_t *value, const bvconstant_t *bv_value);
 
+/** Construct a rounding-mode value. */
+void mcsat_value_construct_rounding_mode(mcsat_value_t *value, fp_rounding_mode_t mode);
+
+/** Construct a floating-point value. */
+void mcsat_value_construct_fp_value(mcsat_value_t *value, const fp_const_t *fp_value);
+
 /** Construct a copy */
 void mcsat_value_construct_copy(mcsat_value_t *value, const mcsat_value_t *from);
 
@@ -106,6 +118,12 @@ mcsat_value_t* mcsat_value_new_lp_value(const lp_value_t *lp_value);
 
 /** Construct and allocate a bv value */
 mcsat_value_t* mcsat_value_new_bv_value(const bvconstant_t *bv_value);
+
+/** Construct and allocate a rounding-mode value */
+mcsat_value_t* mcsat_value_new_rounding_mode(fp_rounding_mode_t mode);
+
+/** Construct and allocate a floating-point value */
+mcsat_value_t* mcsat_value_new_fp_value(const fp_const_t *fp_value);
 
 /** Construct and allocate a copy */
 mcsat_value_t* mcsat_value_new_copy(const mcsat_value_t *from);

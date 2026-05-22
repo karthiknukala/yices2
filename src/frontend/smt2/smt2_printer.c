@@ -63,6 +63,69 @@ static void smt2_pp_bitvector(smt2_pp_t *printer, value_bv_t *b) {
   }
 }
 
+static void smt2_pp_rounding_mode(smt2_pp_t *printer, fp_rounding_mode_t mode) {
+  switch (mode) {
+  case FP_RNE:
+    pp_string(&printer->pp, "RNE");
+    break;
+  case FP_RNA:
+    pp_string(&printer->pp, "RNA");
+    break;
+  case FP_RTN:
+    pp_string(&printer->pp, "RTN");
+    break;
+  case FP_RTP:
+    pp_string(&printer->pp, "RTP");
+    break;
+  case FP_RTZ:
+    pp_string(&printer->pp, "RTZ");
+    break;
+  }
+}
+
+static void smt2_pp_fp(smt2_pp_t *printer, value_fp_t *fp) {
+  char buffer[32];
+  const char *name;
+
+  switch ((fp_value_kind_t) fp->kind) {
+  case FP_VALUE_NAN:
+    name = "NaN";
+    break;
+  case FP_VALUE_POS_INF:
+    name = "+oo";
+    break;
+  case FP_VALUE_NEG_INF:
+    name = "-oo";
+    break;
+  case FP_VALUE_POS_ZERO:
+    name = "+zero";
+    break;
+  case FP_VALUE_NEG_ZERO:
+    name = "-zero";
+    break;
+  case FP_VALUE_NUMERAL:
+    pp_open_block(&printer->pp, PP_OPEN_PAR);
+    pp_string(&printer->pp, "fp");
+    pp_uint32(&printer->pp, fp->sign ? 1u : 0u);
+    snprintf(buffer, sizeof(buffer), "0x%"PRIx64, fp->exponent);
+    pp_string(&printer->pp, buffer);
+    snprintf(buffer, sizeof(buffer), "0x%"PRIx64, fp->significand);
+    pp_string(&printer->pp, buffer);
+    pp_close_block(&printer->pp, true);
+    return;
+  default:
+    name = "NaN";
+    break;
+  }
+
+  pp_open_block(&printer->pp, PP_OPEN_PAR);
+  pp_string(&printer->pp, "_");
+  pp_string(&printer->pp, name);
+  pp_uint32(&printer->pp, fp->ebits);
+  pp_uint32(&printer->pp, fp->sbits);
+  pp_close_block(&printer->pp, true);
+}
+
 
 /*
  * SMT2 format for integer and rational constants
@@ -175,6 +238,12 @@ void smt2_pp_object(smt2_pp_t *printer, value_table_t *table, value_t c) {
     break;
   case BITVECTOR_VALUE:
     smt2_pp_bitvector(printer, table->desc[c].ptr);
+    break;
+  case ROUNDING_MODE_VALUE:
+    smt2_pp_rounding_mode(printer, (fp_rounding_mode_t) table->desc[c].integer);
+    break;
+  case FP_VALUE:
+    smt2_pp_fp(printer, table->desc[c].ptr);
     break;
   case UNINTERPRETED_VALUE:
     smt2_pp_unint_name(printer, c);

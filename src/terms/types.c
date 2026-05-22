@@ -269,8 +269,13 @@ static void erase_type(type_table_t *table, type_t i) {
     return; // never delete predefined types
 
   case BITVECTOR_TYPE:
+  case ROUNDING_MODE_TYPE:
   case SCALAR_TYPE:
   case UNINTERPRETED_TYPE:
+    break;
+
+  case FP_TYPE:
+    safe_free(desc->ptr);
     break;
 
   case FF_TYPE:
@@ -536,6 +541,44 @@ static type_t new_bitvector_type(type_table_t *table, uint32_t k) {
 }
 
 /*
+ * Add the RoundingMode type and return its id.
+ */
+static type_t new_rounding_mode_type(type_table_t *table) {
+  type_t i = allocate_type_id(table, ROUNDING_MODE_TYPE,
+                              /*card=*/5,
+                              /*depth=*/0,
+                              SMALL_TYPE_FLAGS);
+  type_desc(table, i)->integer = 0;
+
+  return i;
+}
+
+/*
+ * Add type (_ FloatingPoint ebits sbits) and return its id.
+ */
+static type_t new_fp_type(type_table_t *table, uint32_t ebits, uint32_t sbits) {
+  fp_type_t *d;
+  uint32_t nbits, card;
+
+  assert(ebits > 0 && sbits > 0);
+
+  d = safe_malloc(sizeof(fp_type_t));
+  d->ebits = ebits;
+  d->sbits = sbits;
+
+  nbits = ebits + sbits;
+  card = nbits < 32 ? ((uint32_t) 1) << nbits : UINT32_MAX;
+
+  type_t i = allocate_type_id(table, FP_TYPE,
+                              /*card=*/card,
+                              /*depth=*/0,
+                              nbits < 32 ? SMALL_TYPE_FLAGS : LARGE_TYPE_FLAGS);
+  type_desc(table, i)->ptr = d;
+
+  return i;
+}
+
+/*
  * Add type (FiniteField k) and return its id
  * - k must be positive
  */
@@ -791,6 +834,18 @@ typedef struct bv_type_hobj_s {
   uint32_t size;
 } bv_type_hobj_t;
 
+typedef struct rm_type_hobj_s {
+  int_hobj_t m;
+  type_table_t *tbl;
+} rm_type_hobj_t;
+
+typedef struct fp_type_hobj_s {
+  int_hobj_t m;
+  type_table_t *tbl;
+  uint32_t ebits;
+  uint32_t sbits;
+} fp_type_hobj_t;
+
 typedef struct ff_type_hobj_s {
   int_hobj_t m;
   type_table_t *tbl;
@@ -834,6 +889,14 @@ static uint32_t hash_bv_type(bv_type_hobj_t *p) {
   return jenkins_hash_pair(p->size, 0, 0x7838abe2);
 }
 
+static uint32_t hash_rm_type(rm_type_hobj_t *p) {
+  return jenkins_hash_pair(0, 0, 0x6f19ce32);
+}
+
+static uint32_t hash_fp_type(fp_type_hobj_t *p) {
+  return jenkins_hash_pair(p->ebits, p->sbits, 0x9482f1da);
+}
+
 static uint32_t hash_ff_type(ff_type_hobj_t *p) {
   assert(q_is_integer(p->order));
   return jenkins_hash_pair(q_hash_numerator(p->order), 0, 0x78210bea);
@@ -868,6 +931,14 @@ static uint32_t hash_instance_type(instance_type_hobj_t *p) {
  */
 static uint32_t hash_bvtype(int32_t size) {
   return jenkins_hash_pair(size, 0, 0x7838abe2);
+}
+
+static uint32_t hash_rmtype(void) {
+  return jenkins_hash_pair(0, 0, 0x6f19ce32);
+}
+
+static uint32_t hash_fptype(fp_type_t *p) {
+  return jenkins_hash_pair(p->ebits, p->sbits, 0x9482f1da);
 }
 
 static uint32_t hash_fftype(rational_t *order) {
@@ -906,6 +977,25 @@ static bool eq_bv_type(bv_type_hobj_t *p, type_t i) {
 
   table = p->tbl;
   return type_desc(table, i)->kind == BITVECTOR_TYPE && type_desc(table, i)->integer == p->size;
+}
+
+static bool eq_rm_type(rm_type_hobj_t *p, type_t i) {
+  type_table_t *table;
+
+  table = p->tbl;
+  return type_desc(table, i)->kind == ROUNDING_MODE_TYPE;
+}
+
+static bool eq_fp_type(fp_type_hobj_t *p, type_t i) {
+  type_table_t *table;
+  fp_type_t *d;
+
+  table = p->tbl;
+  if (type_desc(table, i)->kind != FP_TYPE) {
+    return false;
+  }
+  d = type_desc(table, i)->ptr;
+  return d->ebits == p->ebits && d->sbits == p->sbits;
 }
 
 static bool eq_ff_type(ff_type_hobj_t *p, type_t i) {
@@ -984,6 +1074,14 @@ static type_t build_bv_type(bv_type_hobj_t *p) {
   return new_bitvector_type(p->tbl, p->size);
 }
 
+static type_t build_rm_type(rm_type_hobj_t *p) {
+  return new_rounding_mode_type(p->tbl);
+}
+
+static type_t build_fp_type(fp_type_hobj_t *p) {
+  return new_fp_type(p->tbl, p->ebits, p->sbits);
+}
+
 static type_t build_ff_type(ff_type_hobj_t *p) {
   return new_finite_field_type(p->tbl, p->order);
 }
@@ -1036,6 +1134,7 @@ void delete_type_table(type_table_t *table) {
   // delete all allocated descriptors
   for (i=0; i<ntypes(table); i++) {
     switch (type_desc(table, i)->kind) {
+    case FP_TYPE:
     case TUPLE_TYPE:
     case FUNCTION_TYPE:
     case INSTANCE_TYPE:
@@ -1094,6 +1193,7 @@ void reset_type_table(type_table_t *table) {
   // delete descriptors
   for (i=0; i<ntypes(table); i++) {
     switch (type_desc(table, i)->kind) {
+    case FP_TYPE:
     case TUPLE_TYPE:
     case FUNCTION_TYPE:
     case INSTANCE_TYPE:
@@ -1140,6 +1240,36 @@ type_t bv_type(type_table_t *table, uint32_t size) {
   bv_hobj.tbl = table;
   bv_hobj.size = size;
   return int_htbl_get_obj(&table->htbl, &bv_hobj.m);
+}
+
+/*
+ * RoundingMode type
+ */
+type_t rounding_mode_type(type_table_t *table) {
+  rm_type_hobj_t rm_hobj;
+
+  rm_hobj.m.hash = (hobj_hash_t) hash_rm_type;
+  rm_hobj.m.eq = (hobj_eq_t) eq_rm_type;
+  rm_hobj.m.build = (hobj_build_t) build_rm_type;
+  rm_hobj.tbl = table;
+  return int_htbl_get_obj(&table->htbl, &rm_hobj.m);
+}
+
+/*
+ * FloatingPoint type
+ */
+type_t fp_type(type_table_t *table, uint32_t ebits, uint32_t sbits) {
+  fp_type_hobj_t fp_hobj;
+
+  assert(ebits > 0 && sbits > 0);
+
+  fp_hobj.m.hash = (hobj_hash_t) hash_fp_type;
+  fp_hobj.m.eq = (hobj_eq_t) eq_fp_type;
+  fp_hobj.m.build = (hobj_build_t) build_fp_type;
+  fp_hobj.tbl = table;
+  fp_hobj.ebits = ebits;
+  fp_hobj.sbits = sbits;
+  return int_htbl_get_obj(&table->htbl, &fp_hobj.m);
 }
 
 /*
@@ -1740,6 +1870,8 @@ bool type_matcher_add_constraint(type_matcher_t *matcher, type_t tau, type_t sig
   case BOOL_TYPE:
   case INT_TYPE:
   case BITVECTOR_TYPE:
+  case ROUNDING_MODE_TYPE:
+  case FP_TYPE:
   case FF_TYPE:
   case SCALAR_TYPE:
   case UNINTERPRETED_TYPE:
@@ -2782,6 +2914,14 @@ static void erase_hcons_type(type_table_t *table, type_t i) {
   switch (type_desc(table, i)->kind) {
   case BITVECTOR_TYPE:
     k = hash_bvtype(type_desc(table, i)->integer);
+    break;
+
+  case ROUNDING_MODE_TYPE:
+    k = hash_rmtype();
+    break;
+
+  case FP_TYPE:
+    k = hash_fptype(type_desc(table, i)->ptr);
     break;
 
   case FF_TYPE:

@@ -84,6 +84,8 @@ static const char * const smt_logic_names[NUM_SMT_LOGIC_NAMES] = {
   "QF_BV",
   "QF_BVLRA",
   "QF_FFA",
+  "QF_FP",
+  "QF_FPBV",
   "QF_IDL",
   "QF_LIA",
   "QF_LIRA",
@@ -175,6 +177,8 @@ static const smt_logic_t smt_code[NUM_SMT_LOGIC_NAMES] = {
   QF_BV,
   QF_BVLRA,
   QF_FFA,
+  QF_FP,
+  QF_FPBV,
   QF_IDL,
   QF_LIA,
   QF_LIRA,
@@ -338,6 +342,8 @@ static const uint8_t has_arrays[NUM_SMT_LOGICS] = {
   true,   // QF_AX
   false,  // QF_BV
   false,  // QF_FFA
+  false,  // QF_FP
+  false,  // QF_FPBV
   false,  // QF_IDL
   false,  // QF_LIA
   false,  // QF_LRA
@@ -426,6 +432,8 @@ static const uint8_t has_bv[NUM_SMT_LOGICS] = {
   false,  // QF_AX
   true,   // QF_BV
   false,  // QF_FFA
+  false,  // QF_FP
+  true,   // QF_FPBV
   false,  // QF_IDL
   false,  // QF_LIA
   false,  // QF_LRA
@@ -514,6 +522,8 @@ static const uint8_t has_quantifiers[NUM_SMT_LOGICS] = {
   false,  // QF_AX
   false,  // QF_BV
   false,  // QF_FFA
+  false,  // QF_FP
+  false,  // QF_FPBV
   false,  // QF_IDL
   false,  // QF_LIA
   false,  // QF_LRA
@@ -602,6 +612,8 @@ static const uint8_t has_uf[NUM_SMT_LOGICS] = {
   false,  // QF_AX
   false,  // QF_BV
   false,  // QF_FFA
+  false,  // QF_FP
+  false,  // QF_FPBV
   false,  // QF_IDL
   false,  // QF_LIA
   false,  // QF_LRA
@@ -690,6 +702,8 @@ static const uint8_t arith_frag[NUM_SMT_LOGICS] = {
   ARITH_NONE,   // QF_AX
   ARITH_NONE,   // QF_BV
   ARITH_FFA,    // QF_FFA
+  ARITH_NONE,   // QF_FP
+  ARITH_NONE,   // QF_FPBV
   ARITH_IDL,    // QF_IDL
   ARITH_LIA,    // QF_LIA
   ARITH_LRA,    // QF_LRA
@@ -822,6 +836,8 @@ static const smt_logic_t logic2qf[NUM_SMT_LOGICS] = {
   QF_AX,
   QF_BV,
   QF_FFA,
+  QF_FP,
+  QF_FPBV,
   QF_IDL,
   QF_LIA,
   QF_LRA,
@@ -923,6 +939,8 @@ static const bool is_official[NUM_SMT_LOGICS] = {
   true,   // QF_AX
   true,   // QF_BV
   false,  // QF_FFA
+  true,   // QF_FP
+  true,   // QF_FPBV
   true,   // QF_IDL
   true,   // QF_LIA
   true,   // QF_LRA
@@ -969,5 +987,3 @@ bool logic_is_official(smt_logic_t code) {
   assert(code != SMT_UNKNOWN);
   return is_official[code];
 }
-
-

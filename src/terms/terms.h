@@ -250,6 +250,8 @@ typedef enum {
   ARITH_FF_CONSTANT,  // finite field constant
   BV64_CONSTANT,    // compact bitvector constant (64 bits at most)
   BV_CONSTANT,      // generic bitvector constant (more than 64 bits)
+  ROUNDING_MODE_CONSTANT, // IEEE-754 rounding mode constant
+  FP_CONSTANT,      // IEEE-754 floating-point constant
 
   /*
    * Non-constant, atomic terms
@@ -302,6 +304,20 @@ typedef enum {
   BV_EQ_ATOM,         // equality: (t1 == t2)
   BV_GE_ATOM,         // unsigned comparison: (t1 >= t2)
   BV_SGE_ATOM,        // signed comparison (t1 >= t2)
+
+  FP_ADD,             // fp.add rounding-mode t1 t2
+  FP_SUB,             // fp.sub rounding-mode t1 t2
+  FP_MUL,             // fp.mul rounding-mode t1 t2
+  FP_EQ_ATOM,         // fp.eq t1 t2
+  FP_LT_ATOM,         // fp.lt t1 t2
+  FP_LEQ_ATOM,        // fp.leq t1 t2
+  FP_GT_ATOM,         // fp.gt t1 t2
+  FP_GEQ_ATOM,        // fp.geq t1 t2
+  FP_ISNAN_ATOM,      // fp.isNaN t
+  FP_ISINF_ATOM,      // fp.isInfinite t
+  FP_ISZERO_ATOM,     // fp.isZero t
+  FP_ISSUBNORMAL_ATOM,// fp.isSubnormal t
+  FP_ISNORMAL_ATOM,   // fp.isNormal t
 
   SELECT_TERM,      // tuple projection
   BIT_TERM,         // bit-select
@@ -415,6 +431,37 @@ typedef struct bvconst64_term_s {
   uint32_t bitsize; // between 1 and 64
   uint64_t value;   // normalized value: high-order bits are 0
 } bvconst64_term_t;
+
+typedef enum {
+  FP_RNE,
+  FP_RNA,
+  FP_RTN,
+  FP_RTP,
+  FP_RTZ
+} fp_rounding_mode_t;
+
+typedef enum {
+  FP_VALUE_NUMERAL,
+  FP_VALUE_NAN,
+  FP_VALUE_POS_INF,
+  FP_VALUE_NEG_INF,
+  FP_VALUE_POS_ZERO,
+  FP_VALUE_NEG_ZERO
+} fp_value_kind_t;
+
+/*
+ * Floating-point constants for native FP terms.
+ * For FP_VALUE_NUMERAL, sign/exponent/significand store the raw IEEE fields.
+ * The significand field excludes the hidden bit and has sbits-1 bits.
+ */
+typedef struct fp_const_s {
+  uint32_t ebits;
+  uint32_t sbits;
+  uint8_t kind;
+  bool sign;
+  uint64_t exponent;
+  uint64_t significand;
+} fp_const_t;
 
 
 /*
@@ -795,6 +842,32 @@ extern term_t bv64_constant(term_table_t *table, uint32_t n, uint64_t bv);
  * This constructor should be used only for n > 64.
  */
 extern term_t bvconst_term(term_table_t *table, uint32_t n, const uint32_t *bv);
+
+/*
+ * Floating-point constants and rounding modes.
+ */
+extern term_t rounding_mode_constant(term_table_t *table, fp_rounding_mode_t mode);
+extern term_t fp_constant(term_table_t *table, const fp_const_t *value);
+extern term_t fp_special_constant(term_table_t *table, uint32_t ebits, uint32_t sbits, fp_value_kind_t kind);
+extern term_t fp_bitpattern_constant(term_table_t *table, uint32_t ebits, uint32_t sbits,
+                                     bool sign, uint64_t exponent, uint64_t significand);
+
+/*
+ * Floating-point operation terms.
+ */
+extern term_t fp_add_term(term_table_t *table, term_t rm, term_t a, term_t b);
+extern term_t fp_sub_term(term_table_t *table, term_t rm, term_t a, term_t b);
+extern term_t fp_mul_term(term_table_t *table, term_t rm, term_t a, term_t b);
+extern term_t fp_eq_atom(term_table_t *table, term_t a, term_t b);
+extern term_t fp_lt_atom(term_table_t *table, term_t a, term_t b);
+extern term_t fp_leq_atom(term_table_t *table, term_t a, term_t b);
+extern term_t fp_gt_atom(term_table_t *table, term_t a, term_t b);
+extern term_t fp_geq_atom(term_table_t *table, term_t a, term_t b);
+extern term_t fp_isnan_atom(term_table_t *table, term_t a);
+extern term_t fp_isinf_atom(term_table_t *table, term_t a);
+extern term_t fp_iszero_atom(term_table_t *table, term_t a);
+extern term_t fp_issubnormal_atom(term_table_t *table, term_t a);
+extern term_t fp_isnormal_atom(term_table_t *table, term_t a);
 
 
 /*
@@ -1323,6 +1396,14 @@ static inline bool is_bitvector_term(const term_table_t *table, term_t t) {
   return term_type_kind(table, t) == BITVECTOR_TYPE;
 }
 
+static inline bool is_rounding_mode_term(const term_table_t *table, term_t t) {
+  return term_type_kind(table, t) == ROUNDING_MODE_TYPE;
+}
+
+static inline bool is_fp_term(const term_table_t *table, term_t t) {
+  return term_type_kind(table, t) == FP_TYPE;
+}
+
 static inline bool is_finitefield_term(const term_table_t *table, term_t t) {
   return term_type_kind(table, t) == FF_TYPE;
 }
@@ -1365,7 +1446,7 @@ static inline bool is_ite_term(const term_table_t *table, term_t t) {
 
 // Check whether t is atomic and constant
 static inline bool is_const_kind(term_kind_t tag) {
-  return CONSTANT_TERM <= tag && tag <= BV_CONSTANT;
+  return CONSTANT_TERM <= tag && tag <= FP_CONSTANT;
 }
 
 static inline bool is_const_term(const term_table_t *table, term_t t) {
@@ -1488,6 +1569,16 @@ static inline bvconst64_term_t *bvconst64_term_desc(const term_table_t *table, t
 static inline bvconst_term_t *bvconst_term_desc(const term_table_t *table, term_t t) {
   assert(term_kind(table, t) == BV_CONSTANT);
   return bvconst_for_idx(table, index_of(t));
+}
+
+static inline fp_rounding_mode_t rounding_mode_term_desc(const term_table_t *table, term_t t) {
+  assert(term_kind(table, t) == ROUNDING_MODE_CONSTANT);
+  return (fp_rounding_mode_t) integer_value_for_idx(table, index_of(t));
+}
+
+static inline fp_const_t *fp_const_term_desc(const term_table_t *table, term_t t) {
+  assert(term_kind(table, t) == FP_CONSTANT);
+  return ptr_for_idx(table, index_of(t));
 }
 
 static inline bvpoly64_t *bvpoly64_term_desc(const term_table_t *table, term_t t) {

@@ -103,6 +103,13 @@ static void print_type_recur(FILE *f, type_table_t *tbl, type_t tau, int32_t lev
       case BITVECTOR_TYPE:
         fprintf(f, "(bitvector %"PRIu32")", bv_type_size(tbl, tau));
         break;
+      case ROUNDING_MODE_TYPE:
+        fputs("RoundingMode", f);
+        break;
+      case FP_TYPE:
+        fprintf(f, "(floating-point %"PRIu32" %"PRIu32")",
+                fp_type_ebits(tbl, tau), fp_type_sbits(tbl, tau));
+        break;
       case FF_TYPE:
         fprintf(f, "(finitefield ");
         q_print(f, ff_type_size(tbl, tau));
@@ -338,6 +345,13 @@ void print_type_table(FILE *f, type_table_t *tbl) {
       case BITVECTOR_TYPE:
         fprintf(f, "(bitvector %"PRIu32")\n", bv_type_size(tbl, i));
         break;
+      case ROUNDING_MODE_TYPE:
+        fputs("RoundingMode\n", f);
+        break;
+      case FP_TYPE:
+        fprintf(f, "(floating-point %"PRIu32" %"PRIu32")\n",
+                fp_type_ebits(tbl, i), fp_type_sbits(tbl, i));
+        break;
       case FF_TYPE:
         fprintf(f, "(finitefield");
         q_print(f, ff_type_size(tbl, i));
@@ -457,6 +471,18 @@ static void pp_type_recur(yices_pp_t *printer, type_table_t *tbl, type_t tau, in
         pp_close_block(printer, true);
         break;
 
+      case ROUNDING_MODE_TYPE:
+        pp_string(printer, "RoundingMode");
+        break;
+
+      case FP_TYPE:
+        pp_open_block(printer, PP_OPEN_BV_TYPE);
+        pp_string(printer, "floating-point");
+        pp_uint32(printer, fp_type_ebits(tbl, tau));
+        pp_uint32(printer, fp_type_sbits(tbl, tau));
+        pp_close_block(printer, true);
+        break;
+
       case FF_TYPE:
         pp_open_block(printer, PP_OPEN_FF_TYPE);
         pp_rational(printer, ff_type_size(tbl, tau));
@@ -564,5 +590,4 @@ void pp_type_table(FILE *f, type_table_t *tbl) {
 
   delete_yices_pp(&printer, false);
 }
-
 

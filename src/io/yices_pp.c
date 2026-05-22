@@ -20,6 +20,7 @@
  * PRETTY PRINTER FOR YICES OBJECTS
  */
 
+#include <inttypes.h>
 #include <string.h>
 #ifdef HAVE_MCSAT
 #include <poly/algebraic_number.h>
@@ -1274,6 +1275,69 @@ void pp_bitvector(yices_pp_t *printer, value_bv_t *b) {
   pp_smt2_bv(printer, b->data, b->nbits);
 }
 
+static void pp_rounding_mode(yices_pp_t *printer, fp_rounding_mode_t mode) {
+  switch (mode) {
+  case FP_RNE:
+    pp_string(printer, "RNE");
+    break;
+  case FP_RNA:
+    pp_string(printer, "RNA");
+    break;
+  case FP_RTN:
+    pp_string(printer, "RTN");
+    break;
+  case FP_RTP:
+    pp_string(printer, "RTP");
+    break;
+  case FP_RTZ:
+    pp_string(printer, "RTZ");
+    break;
+  }
+}
+
+static void pp_fp_value(yices_pp_t *printer, value_fp_t *fp) {
+  char buffer[32];
+  const char *name;
+
+  switch ((fp_value_kind_t) fp->kind) {
+  case FP_VALUE_NAN:
+    name = "NaN";
+    break;
+  case FP_VALUE_POS_INF:
+    name = "+oo";
+    break;
+  case FP_VALUE_NEG_INF:
+    name = "-oo";
+    break;
+  case FP_VALUE_POS_ZERO:
+    name = "+zero";
+    break;
+  case FP_VALUE_NEG_ZERO:
+    name = "-zero";
+    break;
+  case FP_VALUE_NUMERAL:
+    pp_open_block(printer, PP_OPEN_PAR);
+    pp_string(printer, "fp");
+    pp_uint32(printer, fp->sign ? 1u : 0u);
+    snprintf(buffer, sizeof(buffer), "0x%"PRIx64, fp->exponent);
+    pp_string(printer, buffer);
+    snprintf(buffer, sizeof(buffer), "0x%"PRIx64, fp->significand);
+    pp_string(printer, buffer);
+    pp_close_block(printer, true);
+    return;
+  default:
+    name = "NaN";
+    break;
+  }
+
+  pp_open_block(printer, PP_OPEN_PAR);
+  pp_string(printer, "_");
+  pp_string(printer, name);
+  pp_uint32(printer, fp->ebits);
+  pp_uint32(printer, fp->sbits);
+  pp_close_block(printer, true);
+}
+
 /*
  * For uninterpreted constants: always print an abstract name
  */
@@ -1419,6 +1483,12 @@ void pp_object(yices_pp_t *printer, value_table_t *table, value_t c) {
   case BITVECTOR_VALUE:
     pp_bitvector(printer, table->desc[c].ptr);
     break;
+  case ROUNDING_MODE_VALUE:
+    pp_rounding_mode(printer, (fp_rounding_mode_t) table->desc[c].integer);
+    break;
+  case FP_VALUE:
+    pp_fp_value(printer, table->desc[c].ptr);
+    break;
   case UNINTERPRETED_VALUE:
     pp_unint_name(printer, c);
     break;
@@ -1493,4 +1563,3 @@ void pp_open_block(yices_pp_t *printer, pp_open_type_t id) {
 void pp_close_block(yices_pp_t *printer, bool par) {
   pp_push_token(&printer->pp, printer->close[par]);
 }
-

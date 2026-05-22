@@ -84,6 +84,31 @@ static void smt2_pp_type_recur(smt2_pp_t *printer, type_table_t *tbl, type_t tau
     }
     break;
 
+  case ROUNDING_MODE_TYPE:
+    if (name != NULL && level <= 0) {
+      smt2_pp_symbol(printer, name);
+    } else {
+      pp_string(&printer->pp, "RoundingMode");
+    }
+    break;
+
+  case FP_TYPE:
+    if (name != NULL && level <= 0) {
+      smt2_pp_symbol(printer, name);
+    } else if (fp_type_ebits(tbl, tau) == 8 && fp_type_sbits(tbl, tau) == 24) {
+      pp_string(&printer->pp, "Float32");
+    } else if (fp_type_ebits(tbl, tau) == 11 && fp_type_sbits(tbl, tau) == 53) {
+      pp_string(&printer->pp, "Float64");
+    } else {
+      pp_open_block(&printer->pp, PP_OPEN_PAR);
+      pp_string(&printer->pp, "_");
+      pp_string(&printer->pp, "FloatingPoint");
+      pp_uint32(&printer->pp, fp_type_ebits(tbl, tau));
+      pp_uint32(&printer->pp, fp_type_sbits(tbl, tau));
+      pp_close_block(&printer->pp, true);
+    }
+    break;
+
   case FF_TYPE:
     if (name != NULL && level <= 0) {
       smt2_pp_symbol(printer, name);

@@ -380,6 +380,11 @@ mcsat_src_c := \
 	mcsat/ff/ff_plugin_explain.c \
 	mcsat/ff/ff_libpoly.c \
 	mcsat/ff/ff_feasible_set_db.c \
+	mcsat/fp/fp_dyadic.c \
+	mcsat/fp/fp_value.c \
+	mcsat/fp/fp_round.c \
+	mcsat/fp/fp_explain.c \
+	mcsat/fp/fp_plugin.c \
 	mcsat/ite/ite_plugin.c \
 	mcsat/bv/bv_plugin.c \
 	mcsat/bv/bv_bdd_manager.c \

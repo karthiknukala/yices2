@@ -290,6 +290,8 @@ harray_t *get_free_vars_of_term(fvar_collector_t *collect, term_t t) {
   case ARITH_CONSTANT:
   case BV64_CONSTANT:
   case BV_CONSTANT:
+  case ROUNDING_MODE_CONSTANT:
+  case FP_CONSTANT:
   case UNINTERPRETED_TERM:
     result = empty_fvar_set(collect);
     break;
@@ -343,11 +345,27 @@ harray_t *get_free_vars_of_term(fvar_collector_t *collect, term_t t) {
   case BV_EQ_ATOM:
   case BV_GE_ATOM:
   case BV_SGE_ATOM:
+  case FP_ADD:
+  case FP_SUB:
+  case FP_MUL:
+  case FP_EQ_ATOM:
+  case FP_LT_ATOM:
+  case FP_LEQ_ATOM:
+  case FP_GT_ATOM:
+  case FP_GEQ_ATOM:
     result = lookup_free_vars(collect, i);
     if (result == NULL) {
       result = free_vars_of_composite(collect, composite_for_idx(terms, i));
       cache_free_vars(collect, i, result);
     }
+    break;
+
+  case FP_ISNAN_ATOM:
+  case FP_ISINF_ATOM:
+  case FP_ISZERO_ATOM:
+  case FP_ISSUBNORMAL_ATOM:
+  case FP_ISNORMAL_ATOM:
+    result = get_free_vars_of_term(collect, integer_value_for_idx(terms, i));
     break;
 
   case FORALL_TERM:

@@ -65,6 +65,57 @@ static inline void vtbl_print_bitvector(FILE *f, value_bv_t *b) {
   bvconst_print(f, b->data, b->nbits);
 }
 
+static void vtbl_print_rounding_mode(FILE *f, fp_rounding_mode_t mode) {
+  switch (mode) {
+  case FP_RNE:
+    fputs("RNE", f);
+    break;
+  case FP_RNA:
+    fputs("RNA", f);
+    break;
+  case FP_RTN:
+    fputs("RTN", f);
+    break;
+  case FP_RTP:
+    fputs("RTP", f);
+    break;
+  case FP_RTZ:
+    fputs("RTZ", f);
+    break;
+  }
+}
+
+static void vtbl_print_fp(FILE *f, value_fp_t *fp) {
+  const char *name;
+
+  switch ((fp_value_kind_t) fp->kind) {
+  case FP_VALUE_NAN:
+    name = "NaN";
+    break;
+  case FP_VALUE_POS_INF:
+    name = "+oo";
+    break;
+  case FP_VALUE_NEG_INF:
+    name = "-oo";
+    break;
+  case FP_VALUE_POS_ZERO:
+    name = "+zero";
+    break;
+  case FP_VALUE_NEG_ZERO:
+    name = "-zero";
+    break;
+  case FP_VALUE_NUMERAL:
+    fprintf(f, "(fp %u 0x%"PRIx64" 0x%"PRIx64")",
+            fp->sign ? 1u : 0u, fp->exponent, fp->significand);
+    return;
+  default:
+    name = "NaN";
+    break;
+  }
+
+  fprintf(f, "(_ %s %"PRIu32" %"PRIu32")", name, fp->ebits, fp->sbits);
+}
+
 
 /*
  * For uninterpreted constants:
@@ -183,6 +234,12 @@ void vtbl_print_object(FILE *f, value_table_t *table, value_t c) {
     break;
   case BITVECTOR_VALUE:
     vtbl_print_bitvector(f, table->desc[c].ptr);
+    break;
+  case ROUNDING_MODE_VALUE:
+    vtbl_print_rounding_mode(f, (fp_rounding_mode_t) table->desc[c].integer);
+    break;
+  case FP_VALUE:
+    vtbl_print_fp(f, table->desc[c].ptr);
     break;
   case TUPLE_VALUE:
     vtbl_print_tuple(f, table, table->desc[c].ptr);
@@ -353,6 +410,69 @@ static inline void vtbl_pp_bitvector(yices_pp_t *printer, value_bv_t *b) {
   pp_bv(printer, b->data, b->nbits);
 }
 
+static void vtbl_pp_rounding_mode(yices_pp_t *printer, fp_rounding_mode_t mode) {
+  switch (mode) {
+  case FP_RNE:
+    pp_string(printer, "RNE");
+    break;
+  case FP_RNA:
+    pp_string(printer, "RNA");
+    break;
+  case FP_RTN:
+    pp_string(printer, "RTN");
+    break;
+  case FP_RTP:
+    pp_string(printer, "RTP");
+    break;
+  case FP_RTZ:
+    pp_string(printer, "RTZ");
+    break;
+  }
+}
+
+static void vtbl_pp_fp(yices_pp_t *printer, value_fp_t *fp) {
+  char buffer[32];
+  const char *name;
+
+  switch ((fp_value_kind_t) fp->kind) {
+  case FP_VALUE_NAN:
+    name = "NaN";
+    break;
+  case FP_VALUE_POS_INF:
+    name = "+oo";
+    break;
+  case FP_VALUE_NEG_INF:
+    name = "-oo";
+    break;
+  case FP_VALUE_POS_ZERO:
+    name = "+zero";
+    break;
+  case FP_VALUE_NEG_ZERO:
+    name = "-zero";
+    break;
+  case FP_VALUE_NUMERAL:
+    pp_open_block(printer, PP_OPEN_PAR);
+    pp_string(printer, "fp");
+    pp_uint32(printer, fp->sign ? 1u : 0u);
+    snprintf(buffer, sizeof(buffer), "0x%"PRIx64, fp->exponent);
+    pp_string(printer, buffer);
+    snprintf(buffer, sizeof(buffer), "0x%"PRIx64, fp->significand);
+    pp_string(printer, buffer);
+    pp_close_block(printer, true);
+    return;
+  default:
+    name = "NaN";
+    break;
+  }
+
+  pp_open_block(printer, PP_OPEN_PAR);
+  pp_string(printer, "_");
+  pp_string(printer, name);
+  pp_uint32(printer, fp->ebits);
+  pp_uint32(printer, fp->sbits);
+  pp_close_block(printer, true);
+}
+
 
 /*
  * For uninterpreted constants:
@@ -470,6 +590,12 @@ void vtbl_pp_object(yices_pp_t *printer, value_table_t *table, value_t c) {
     break;
   case BITVECTOR_VALUE:
     vtbl_pp_bitvector(printer, table->desc[c].ptr);
+    break;
+  case ROUNDING_MODE_VALUE:
+    vtbl_pp_rounding_mode(printer, (fp_rounding_mode_t) table->desc[c].integer);
+    break;
+  case FP_VALUE:
+    vtbl_pp_fp(printer, table->desc[c].ptr);
     break;
   case TUPLE_VALUE:
     vtbl_pp_tuple(printer, table, table->desc[c].ptr);
@@ -629,4 +755,3 @@ void vtbl_pp_queued_functions(yices_pp_t *printer, value_table_t *table, bool sh
   }
   vtbl_empty_queue(table);
 }
-

@@ -48,6 +48,7 @@
 #include "mcsat/uf/uf_plugin.h"
 #include "mcsat/bv/bv_plugin.h"
 #include "mcsat/ff/ff_plugin.h"
+#include "mcsat/fp/fp_plugin.h"
 #include "mcsat/na/na_plugin.h"
 #include "mcsat/na/na_plugin_internal.h"
 
@@ -401,6 +402,7 @@ struct mcsat_solver_s {
   uint32_t na_plugin_id;
   uint32_t bv_plugin_id;
   uint32_t ff_plugin_id;
+  uint32_t fp_plugin_id;
 
   /** One-shot model hint to replay on parallel worker replicas */
   model_t* pending_model_hint_model;
@@ -1547,6 +1549,7 @@ void mcsat_add_plugins(mcsat_solver_t* mcsat) {
   mcsat->na_plugin_id = mcsat_add_plugin(mcsat, na_plugin_allocator, "na_plugin");
   mcsat->bv_plugin_id = mcsat_add_plugin(mcsat, bv_plugin_allocator, "bv_plugin");
   mcsat->ff_plugin_id = mcsat_add_plugin(mcsat, ff_plugin_allocator, "ff_plugin");
+  mcsat->fp_plugin_id = mcsat_add_plugin(mcsat, fp_plugin_allocator, "fp_plugin");
 }
 
 static

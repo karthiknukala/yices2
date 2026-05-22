@@ -120,6 +120,8 @@ typedef enum smt_logic {
   QF_AX,       // arrays
   QF_BV,       // bitvectors
   QF_FFA,      // finite fields
+  QF_FP,       // floating point
+  QF_FPBV,     // floating point + bitvectors
   QF_IDL,      // integer difference logic
   QF_LIA,      // linear integer arithmetic
   QF_LRA,      // linear real arithmetic

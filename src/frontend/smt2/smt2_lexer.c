@@ -407,6 +407,42 @@ static void smt2_activate_ff(void) {
   active_symbol[SMT2_SYM_FFMUL] = true;
 }
 
+static void smt2_activate_fp(void) {
+  active_symbol[SMT2_SYM_ROUNDINGMODE] = true;
+  active_symbol[SMT2_SYM_FLOAT32] = true;
+  active_symbol[SMT2_SYM_FLOAT64] = true;
+  active_symbol[SMT2_SYM_FLOATINGPOINT] = true;
+  active_symbol[SMT2_SYM_RNE] = true;
+  active_symbol[SMT2_SYM_RNA] = true;
+  active_symbol[SMT2_SYM_RTN] = true;
+  active_symbol[SMT2_SYM_RTP] = true;
+  active_symbol[SMT2_SYM_RTZ] = true;
+  active_symbol[SMT2_SYM_ROUND_NEAREST_TIES_TO_EVEN] = true;
+  active_symbol[SMT2_SYM_ROUND_NEAREST_TIES_TO_AWAY] = true;
+  active_symbol[SMT2_SYM_ROUND_TOWARD_NEGATIVE] = true;
+  active_symbol[SMT2_SYM_ROUND_TOWARD_POSITIVE] = true;
+  active_symbol[SMT2_SYM_ROUND_TOWARD_ZERO] = true;
+  active_symbol[SMT2_SYM_FP_NAN] = true;
+  active_symbol[SMT2_SYM_FP_POS_INF] = true;
+  active_symbol[SMT2_SYM_FP_NEG_INF] = true;
+  active_symbol[SMT2_SYM_FP_POS_ZERO] = true;
+  active_symbol[SMT2_SYM_FP_NEG_ZERO] = true;
+  active_symbol[SMT2_SYM_FP] = true;
+  active_symbol[SMT2_SYM_FP_ADD] = true;
+  active_symbol[SMT2_SYM_FP_SUB] = true;
+  active_symbol[SMT2_SYM_FP_MUL] = true;
+  active_symbol[SMT2_SYM_FP_EQ] = true;
+  active_symbol[SMT2_SYM_FP_LT] = true;
+  active_symbol[SMT2_SYM_FP_LEQ] = true;
+  active_symbol[SMT2_SYM_FP_GT] = true;
+  active_symbol[SMT2_SYM_FP_GEQ] = true;
+  active_symbol[SMT2_SYM_FP_ISNAN] = true;
+  active_symbol[SMT2_SYM_FP_ISINF] = true;
+  active_symbol[SMT2_SYM_FP_ISZERO] = true;
+  active_symbol[SMT2_SYM_FP_ISSUBNORMAL] = true;
+  active_symbol[SMT2_SYM_FP_ISNORMAL] = true;
+}
+
 /*
  * Select the built-in symbols for a given logic
  */
@@ -416,6 +452,9 @@ void smt2_lexer_activate_logic(smt_logic_t logic) {
   }
   if (logic_has_bv(logic)) {
     smt2_activate_bv();
+  }
+  if (logic == QF_FP || logic == QF_FPBV) {
+    smt2_activate_fp();
   }
   switch (arith_fragment(logic)) {
   case ARITH_IDL:
@@ -1256,4 +1295,3 @@ bool symbol_needs_quotes(const char *s) {
 
   return false;
 }
-

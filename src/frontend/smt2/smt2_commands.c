@@ -1367,6 +1367,26 @@ static const char * const opcode_string[NUM_SMT2_OPCODES] = {
   "to_int",               // SMT2_MK_TO_INT
   "is_int",               // SMT2_MK_IS_INT
   "divisible",            // SMT2_MK_DIVISIBLE
+  "FloatingPoint",        // SMT2_MK_FP_TYPE
+  "NaN",                  // SMT2_MK_FP_NAN
+  "+oo",                  // SMT2_MK_FP_POS_INF
+  "-oo",                  // SMT2_MK_FP_NEG_INF
+  "+zero",                // SMT2_MK_FP_POS_ZERO
+  "-zero",                // SMT2_MK_FP_NEG_ZERO
+  "fp",                   // SMT2_MK_FP
+  "fp.add",               // SMT2_MK_FP_ADD
+  "fp.sub",               // SMT2_MK_FP_SUB
+  "fp.mul",               // SMT2_MK_FP_MUL
+  "fp.eq",                // SMT2_MK_FP_EQ
+  "fp.lt",                // SMT2_MK_FP_LT
+  "fp.leq",               // SMT2_MK_FP_LEQ
+  "fp.gt",                // SMT2_MK_FP_GT
+  "fp.geq",               // SMT2_MK_FP_GEQ
+  "fp.isNaN",             // SMT2_MK_FP_ISNAN
+  "fp.isInfinite",        // SMT2_MK_FP_ISINF
+  "fp.isZero",            // SMT2_MK_FP_ISZERO
+  "fp.isSubnormal",       // SMT2_MK_FP_ISSUBNORMAL
+  "fp.isNormal",          // SMT2_MK_FP_ISNORMAL
 };
 
 

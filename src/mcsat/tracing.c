@@ -58,6 +58,10 @@ const char* kind_to_string(term_kind_t t) {
     return "BV64_CONSTANT";
   case BV_CONSTANT:
     return "BV_CONSTANT";
+  case ROUNDING_MODE_CONSTANT:
+    return "ROUNDING_MODE_CONSTANT";
+  case FP_CONSTANT:
+    return "FP_CONSTANT";
   case VARIABLE:
     return "VARIABLE";
   case UNINTERPRETED_TERM:
@@ -136,6 +140,32 @@ const char* kind_to_string(term_kind_t t) {
     return "BV_GE_ATOM";
   case BV_SGE_ATOM:
     return "BV_SGE_ATOM";
+  case FP_ADD:
+    return "FP_ADD";
+  case FP_SUB:
+    return "FP_SUB";
+  case FP_MUL:
+    return "FP_MUL";
+  case FP_EQ_ATOM:
+    return "FP_EQ_ATOM";
+  case FP_LT_ATOM:
+    return "FP_LT_ATOM";
+  case FP_LEQ_ATOM:
+    return "FP_LEQ_ATOM";
+  case FP_GT_ATOM:
+    return "FP_GT_ATOM";
+  case FP_GEQ_ATOM:
+    return "FP_GEQ_ATOM";
+  case FP_ISNAN_ATOM:
+    return "FP_ISNAN_ATOM";
+  case FP_ISINF_ATOM:
+    return "FP_ISINF_ATOM";
+  case FP_ISZERO_ATOM:
+    return "FP_ISZERO_ATOM";
+  case FP_ISSUBNORMAL_ATOM:
+    return "FP_ISSUBNORMAL_ATOM";
+  case FP_ISNORMAL_ATOM:
+    return "FP_ISNORMAL_ATOM";
   case SELECT_TERM:
     return "SELECT_TERM";
   case BIT_TERM:

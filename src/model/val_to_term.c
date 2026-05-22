@@ -101,6 +101,14 @@ static term_t convert_bitvector(term_table_t *terms, value_table_t *vtbl, value_
   return t;
 }
 
+static term_t convert_rounding_mode(term_table_t *terms, value_table_t *vtbl, value_t v) {
+  return rounding_mode_constant(terms, vtbl_rounding_mode(vtbl, v));
+}
+
+static term_t convert_fp(term_table_t *terms, value_table_t *vtbl, value_t v) {
+  return fp_constant(terms, vtbl_fp(vtbl, v));
+}
+
 static term_t convert_unint(term_table_t *terms, value_table_t *vtbl, value_t v) {
   value_unint_t *u;
 
@@ -236,6 +244,14 @@ term_t convert_simple_value(term_table_t *terms, value_table_t *vtbl, value_t v)
     t = convert_bitvector(terms, vtbl, v);
     break;
 
+  case ROUNDING_MODE_VALUE:
+    t = convert_rounding_mode(terms, vtbl, v);
+    break;
+
+  case FP_VALUE:
+    t = convert_fp(terms, vtbl, v);
+    break;
+
   case TUPLE_VALUE:
     t = CONVERT_NOT_PRIMITIVE;
     break;
@@ -332,6 +348,8 @@ static const int32_t convert_code[NUM_VALUE_KIND] = {
   CONVERT_FAILED,         // ALGEBRAIC_VALUE
   0,                      // FINITEFIELD_VALUE
   0,                      // BITVECTOR_VALUE
+  0,                      // ROUNDING_MODE_VALUE
+  0,                      // FP_VALUE
   0,                      // TUPLE_VALUE
   0,                      // UNINTERPRETED_VALUE
   CONVERT_FUNCTION,       // FUNCTION_VALUE
@@ -379,6 +397,22 @@ term_t convert_val(val_converter_t *convert, value_t v) {
     t = convert_cached_term(convert, v);
     if (t < 0) {
       t = convert_bitvector(convert->terms, vtbl, v);
+      convert_cache_map(convert, v, t);
+    }
+    break;
+
+  case ROUNDING_MODE_VALUE:
+    t = convert_cached_term(convert, v);
+    if (t < 0) {
+      t = convert_rounding_mode(convert->terms, vtbl, v);
+      convert_cache_map(convert, v, t);
+    }
+    break;
+
+  case FP_VALUE:
+    t = convert_cached_term(convert, v);
+    if (t < 0) {
+      t = convert_fp(convert->terms, vtbl, v);
       convert_cache_map(convert, v, t);
     }
     break;

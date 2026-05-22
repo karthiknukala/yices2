@@ -427,6 +427,20 @@ static bvconst64_term_t *new_bvconst64_term(uint32_t bitsize, uint64_t v) {
   return d;
 }
 
+/*
+ * Floating-point constant.
+ */
+static fp_const_t *new_fpconst_term(const fp_const_t *v) {
+  fp_const_t *d;
+
+  assert(v->ebits > 0 && v->sbits > 0);
+
+  d = safe_malloc(sizeof(fp_const_t));
+  *d = *v;
+
+  return d;
+}
+
 
 
 /*
@@ -571,6 +585,17 @@ static inline uint32_t hash_bvconst_term(uint32_t bitsize, const uint32_t *bv) {
 static inline uint32_t hash_bvconst64_term(uint32_t bitsize, uint64_t v) {
   assert(v == norm64(v, bitsize));
   return jenkins_hash_mix3((uint32_t)(v >> 32), (uint32_t) v, 0xdeadbeef + bitsize);
+}
+
+static uint32_t hash_fpconst_term(const fp_const_t *v) {
+  uint32_t h;
+
+  h = jenkins_hash_triple(v->ebits, v->sbits, v->kind, 0x2c7a91ef);
+  h = jenkins_hash_triple((uint32_t) v->sign,
+                          (uint32_t) (v->exponent ^ (v->exponent >> 32)),
+                          (uint32_t) (v->significand ^ (v->significand >> 32)),
+                          h);
+  return h;
 }
 
 
@@ -833,6 +858,16 @@ typedef struct {
   uint64_t v;
 } bvconst64_term_hobj_t;
 
+/*
+ * Floating-point constants.
+ */
+typedef struct {
+  int_hobj_t m;
+  term_table_t *tbl;
+  type_t tau;
+  const fp_const_t *v;
+} fpconst_term_hobj_t;
+
 
 
 /*
@@ -848,6 +883,10 @@ static uint32_t hash_rational_hobj(rational_term_hobj_t *o) {
 
 static uint32_t hash_composite_hobj(composite_term_hobj_t *o) {
   return hash_composite_term(o->tag, o->arity, o->arg);
+}
+
+static uint32_t hash_fpconst_hobj(fpconst_term_hobj_t *o) {
+  return hash_fpconst_term(o->v);
 }
 
 static uint32_t hash_app_hobj(app_term_hobj_t *o) {
@@ -1132,6 +1171,25 @@ static bool eq_bvconst64_hobj(bvconst64_term_hobj_t *o, int32_t i) {
   return d->bitsize == o->bitsize && d->value == o->v;
 }
 
+static bool eq_fpconst_hobj(fpconst_term_hobj_t *o, int32_t i) {
+  term_table_t *table;
+  fp_const_t *d;
+
+  table = o->tbl;
+
+  if (kind_for_idx(table, i) != FP_CONSTANT) {
+    return false;
+  }
+
+  d = ptr_for_idx(table, i);
+  return d->ebits == o->v->ebits &&
+         d->sbits == o->v->sbits &&
+         d->kind == o->v->kind &&
+         d->sign == o->v->sign &&
+         d->exponent == o->v->exponent &&
+         d->significand == o->v->significand;
+}
+
 
 /*
  * Build functions: add a new term to o->tbl and return its index
@@ -1258,6 +1316,13 @@ static int32_t build_bvconst64_hobj(bvconst64_term_hobj_t *o) {
 
   c = new_bvconst64_term(o->bitsize, o->v);
   return new_ptr_term(o->tbl, BV64_CONSTANT, o->tau, c);
+}
+
+static int32_t build_fpconst_hobj(fpconst_term_hobj_t *o) {
+  fp_const_t *c;
+
+  c = new_fpconst_term(o->v);
+  return new_ptr_term(o->tbl, FP_CONSTANT, o->tau, c);
 }
 
 
@@ -1545,12 +1610,18 @@ static void delete_term(term_table_t *table, int32_t i) {
 
   case CONSTANT_TERM:
   case VARIABLE:
+  case ROUNDING_MODE_CONSTANT:
   case ARITH_EQ_ATOM:
   case ARITH_GE_ATOM:
   case ARITH_IS_INT_ATOM:
   case ARITH_FLOOR:
   case ARITH_CEIL:
   case ARITH_ABS:
+  case FP_ISNAN_ATOM:
+  case FP_ISINF_ATOM:
+  case FP_ISZERO_ATOM:
+  case FP_ISSUBNORMAL_ATOM:
+  case FP_ISNORMAL_ATOM:
     // The descriptor is an integer nothing to delete.
     h = hash_integer_term(kind_for_idx(table, i), type_for_idx(table, i),
 			  integer_value_for_idx(table, i));
@@ -1579,6 +1650,14 @@ static void delete_term(term_table_t *table, int32_t i) {
   case BV_EQ_ATOM:
   case BV_GE_ATOM:
   case BV_SGE_ATOM:
+  case FP_ADD:
+  case FP_SUB:
+  case FP_MUL:
+  case FP_EQ_ATOM:
+  case FP_LT_ATOM:
+  case FP_LEQ_ATOM:
+  case FP_GT_ATOM:
+  case FP_GEQ_ATOM:
     // Generic composite
     d = composite_for_idx(table, i);
     h = hash_composite_term(kind_for_idx(table, i), d->arity, d->arg);
@@ -1667,6 +1746,11 @@ static void delete_term(term_table_t *table, int32_t i) {
     c = bvconst_for_idx(table, i);
     h = hash_bvconst_term(c->bitsize, c->data);
     safe_free(c);
+    break;
+
+  case FP_CONSTANT:
+    h = hash_fpconst_term(ptr_for_idx(table, i));
+    safe_free(ptr_for_idx(table, i));
     break;
 
   case BV64_POLY:
@@ -1773,6 +1857,7 @@ static void delete_term_descriptors(term_table_t *table) {
     case UNUSED_TERM:
     case RESERVED_TERM:
     case CONSTANT_TERM:
+    case ROUNDING_MODE_CONSTANT:
     case UNINTERPRETED_TERM:
     case VARIABLE:
     case POWER_PRODUCT:
@@ -1783,6 +1868,11 @@ static void delete_term_descriptors(term_table_t *table) {
     case ARITH_FLOOR:
     case ARITH_CEIL:
     case ARITH_ABS:
+    case FP_ISNAN_ATOM:
+    case FP_ISINF_ATOM:
+    case FP_ISZERO_ATOM:
+    case FP_ISSUBNORMAL_ATOM:
+    case FP_ISNORMAL_ATOM:
     case SELECT_TERM:
     case BIT_TERM:
       break;
@@ -1818,7 +1908,19 @@ static void delete_term_descriptors(term_table_t *table) {
     case BV_EQ_ATOM:
     case BV_GE_ATOM:
     case BV_SGE_ATOM:
+    case FP_ADD:
+    case FP_SUB:
+    case FP_MUL:
+    case FP_EQ_ATOM:
+    case FP_LT_ATOM:
+    case FP_LEQ_ATOM:
+    case FP_GT_ATOM:
+    case FP_GEQ_ATOM:
       safe_free(composite_for_idx(table, i));
+      break;
+
+    case FP_CONSTANT:
+      safe_free(ptr_for_idx(table, i));
       break;
 
     case ITE_SPECIAL:
@@ -2664,6 +2766,66 @@ term_t bvconst_term(term_table_t *table, uint32_t n, const uint32_t *bv) {
   return pos_term(i);
 }
 
+term_t rounding_mode_constant(term_table_t *table, fp_rounding_mode_t mode) {
+  int32_t i;
+  integer_term_hobj_t integer_hobj;
+
+  integer_hobj.m.hash = (hobj_hash_t) hash_integer_hobj;
+  integer_hobj.m.eq = (hobj_eq_t) eq_integer_hobj;
+  integer_hobj.m.build = (hobj_build_t) build_integer_hobj;
+  integer_hobj.tbl = table;
+  integer_hobj.tag = ROUNDING_MODE_CONSTANT;
+  integer_hobj.tau = rounding_mode_type(table->types);
+  integer_hobj.id = (int32_t) mode;
+
+  i = int_htbl_get_obj(&table->htbl, &integer_hobj.m);
+
+  return pos_term(i);
+}
+
+term_t fp_constant(term_table_t *table, const fp_const_t *value) {
+  int32_t i;
+  fpconst_term_hobj_t fpconst_hobj;
+
+  fpconst_hobj.m.hash = (hobj_hash_t) hash_fpconst_hobj;
+  fpconst_hobj.m.eq = (hobj_eq_t) eq_fpconst_hobj;
+  fpconst_hobj.m.build = (hobj_build_t) build_fpconst_hobj;
+  fpconst_hobj.tbl = table;
+  fpconst_hobj.tau = fp_type(table->types, value->ebits, value->sbits);
+  fpconst_hobj.v = value;
+
+  i = int_htbl_get_obj(&table->htbl, &fpconst_hobj.m);
+
+  return pos_term(i);
+}
+
+term_t fp_special_constant(term_table_t *table, uint32_t ebits, uint32_t sbits, fp_value_kind_t kind) {
+  fp_const_t c;
+
+  c.ebits = ebits;
+  c.sbits = sbits;
+  c.kind = (uint8_t) kind;
+  c.sign = kind == FP_VALUE_NEG_INF || kind == FP_VALUE_NEG_ZERO;
+  c.exponent = 0;
+  c.significand = 0;
+
+  return fp_constant(table, &c);
+}
+
+term_t fp_bitpattern_constant(term_table_t *table, uint32_t ebits, uint32_t sbits,
+                              bool sign, uint64_t exponent, uint64_t significand) {
+  fp_const_t c;
+
+  c.ebits = ebits;
+  c.sbits = sbits;
+  c.kind = FP_VALUE_NUMERAL;
+  c.sign = sign;
+  c.exponent = exponent;
+  c.significand = significand;
+
+  return fp_constant(table, &c);
+}
+
 
 /*
  * Bitvector formed of arg[0] ... arg[n-1]
@@ -2747,6 +2909,81 @@ term_t bvge_atom(term_table_t *table, term_t l, term_t r) {
 
 term_t bvsge_atom(term_table_t *table, term_t l, term_t r) {
   return binary_term(table, BV_SGE_ATOM, bool_type(table->types), l, r);
+}
+
+static term_t fp_rounding_binary_term(term_table_t *table, term_kind_t tag, term_t rm, term_t a, term_t b) {
+  term_t aux[3];
+  int32_t i;
+  composite_term_hobj_t composite_hobj;
+
+  aux[0] = rm;
+  aux[1] = a;
+  aux[2] = b;
+
+  composite_hobj.m.hash = (hobj_hash_t) hash_composite_hobj;
+  composite_hobj.m.eq = (hobj_eq_t) eq_composite_hobj;
+  composite_hobj.m.build = (hobj_build_t) build_composite_hobj;
+  composite_hobj.tbl = table;
+  composite_hobj.tag = tag;
+  composite_hobj.tau = term_type(table, a);
+  composite_hobj.arity = 3;
+  composite_hobj.arg = aux;
+
+  i = int_htbl_get_obj(&table->htbl, &composite_hobj.m);
+
+  return pos_term(i);
+}
+
+term_t fp_add_term(term_table_t *table, term_t rm, term_t a, term_t b) {
+  return fp_rounding_binary_term(table, FP_ADD, rm, a, b);
+}
+
+term_t fp_sub_term(term_table_t *table, term_t rm, term_t a, term_t b) {
+  return fp_rounding_binary_term(table, FP_SUB, rm, a, b);
+}
+
+term_t fp_mul_term(term_table_t *table, term_t rm, term_t a, term_t b) {
+  return fp_rounding_binary_term(table, FP_MUL, rm, a, b);
+}
+
+term_t fp_eq_atom(term_table_t *table, term_t a, term_t b) {
+  return binary_term(table, FP_EQ_ATOM, bool_type(table->types), a, b);
+}
+
+term_t fp_lt_atom(term_table_t *table, term_t a, term_t b) {
+  return binary_term(table, FP_LT_ATOM, bool_type(table->types), a, b);
+}
+
+term_t fp_leq_atom(term_table_t *table, term_t a, term_t b) {
+  return binary_term(table, FP_LEQ_ATOM, bool_type(table->types), a, b);
+}
+
+term_t fp_gt_atom(term_table_t *table, term_t a, term_t b) {
+  return binary_term(table, FP_GT_ATOM, bool_type(table->types), a, b);
+}
+
+term_t fp_geq_atom(term_table_t *table, term_t a, term_t b) {
+  return binary_term(table, FP_GEQ_ATOM, bool_type(table->types), a, b);
+}
+
+term_t fp_isnan_atom(term_table_t *table, term_t a) {
+  return unary_term(table, FP_ISNAN_ATOM, bool_type(table->types), a);
+}
+
+term_t fp_isinf_atom(term_table_t *table, term_t a) {
+  return unary_term(table, FP_ISINF_ATOM, bool_type(table->types), a);
+}
+
+term_t fp_iszero_atom(term_table_t *table, term_t a) {
+  return unary_term(table, FP_ISZERO_ATOM, bool_type(table->types), a);
+}
+
+term_t fp_issubnormal_atom(term_table_t *table, term_t a) {
+  return unary_term(table, FP_ISSUBNORMAL_ATOM, bool_type(table->types), a);
+}
+
+term_t fp_isnormal_atom(term_table_t *table, term_t a) {
+  return unary_term(table, FP_ISNORMAL_ATOM, bool_type(table->types), a);
 }
 
 
@@ -3636,6 +3873,8 @@ static void mark_reachable_terms(term_table_t *table, int32_t ptr, int32_t i) {
   case ARITH_CONSTANT:
   case BV64_CONSTANT:
   case BV_CONSTANT:
+  case ROUNDING_MODE_CONSTANT:
+  case FP_CONSTANT:
   case VARIABLE:
   case UNINTERPRETED_TERM:
     // leaf terms
@@ -3647,6 +3886,11 @@ static void mark_reachable_terms(term_table_t *table, int32_t ptr, int32_t i) {
   case ARITH_FLOOR:
   case ARITH_CEIL:
   case ARITH_ABS:
+  case FP_ISNAN_ATOM:
+  case FP_ISINF_ATOM:
+  case FP_ISZERO_ATOM:
+  case FP_ISSUBNORMAL_ATOM:
+  case FP_ISNORMAL_ATOM:
     // i has a single subterm stored in desc[i].integer
     mark_and_explore_term(table, ptr, integer_value_for_idx(table, i));
     break;
@@ -3683,6 +3927,14 @@ static void mark_reachable_terms(term_table_t *table, int32_t ptr, int32_t i) {
   case BV_EQ_ATOM:
   case BV_GE_ATOM:
   case BV_SGE_ATOM:
+  case FP_ADD:
+  case FP_SUB:
+  case FP_MUL:
+  case FP_EQ_ATOM:
+  case FP_LT_ATOM:
+  case FP_LEQ_ATOM:
+  case FP_GT_ATOM:
+  case FP_GEQ_ATOM:
     // i's descriptor is a composite term
     mark_composite_term(table, ptr, composite_for_idx(table, i));
     break;
